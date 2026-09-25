@@ -1,13 +1,11 @@
 import json
 import os
 import re
-import sys
-import time
 from pathlib import Path
-from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -20,7 +18,9 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 if not TELEGRAM_TOKEN or not CHAT_ID:
-    raise RuntimeError("Secret mancanti: configura TELEGRAM_TOKEN e CHAT_ID.")
+    raise RuntimeError(
+        "Secret mancanti: configura TELEGRAM_TOKEN e CHAT_ID."
+    )
 
 
 HEADERS = {
@@ -80,14 +80,21 @@ def load_history() -> dict:
             return data
 
     except Exception as exc:
-        print(f"[STORICO] Impossibile leggere lo storico: {exc}")
+        print(
+            f"[STORICO] Impossibile leggere lo storico: {exc}"
+        )
 
     return {}
 
 
 def save_history(history: dict) -> None:
     with HISTORY_FILE.open("w", encoding="utf-8") as f:
-        json.dump(history, f, ensure_ascii=False, indent=2)
+        json.dump(
+            history,
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
 
 
 # ============================================================
@@ -95,7 +102,10 @@ def save_history(history: dict) -> None:
 # ============================================================
 
 def send_telegram(message: str) -> None:
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    url = (
+        f"https://api.telegram.org/"
+        f"bot{TELEGRAM_TOKEN}/sendMessage"
+    )
 
     response = requests.post(
         url,
@@ -113,7 +123,7 @@ def send_telegram(message: str) -> None:
 # SCRAPING
 # ============================================================
 
-def fetch_page(url: str) -> BeautifulSoup:
+def fetch_page_requests(url: str) -> BeautifulSoup:
     response = requests.get(
         url,
         headers=HEADERS,
@@ -122,11 +132,67 @@ def fetch_page(url: str) -> BeautifulSoup:
 
     response.raise_for_status()
 
-    return BeautifulSoup(response.text, "html.parser")
+    return BeautifulSoup(
+        response.text,
+        "html.parser",
+    )
+
+
+def fetch_page_playwright(url: str) -> BeautifulSoup:
+    print("[UEFA] Avvio Playwright...")
+
+    with sync_playwright() as p:
+
+        browser = p.chromium.launch(
+            headless=True
+        )
+
+        page = browser.new_page(
+            user_agent=HEADERS["User-Agent"]
+        )
+
+        try:
+            print(f"[UEFA] Apertura pagina: {url}")
+
+            page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=60000,
+            )
+
+            # La pagina UEFA è dinamica.
+            # Aspettiamo che il contenuto venga renderizzato.
+            try:
+                page.wait_for_selector(
+                    "body",
+                    timeout=15000,
+                )
+            except Exception:
+                pass
+
+            # Piccola attesa per il caricamento
+            # dei dati arbitrali dinamici.
+            page.wait_for_timeout(3000)
+
+            html = page.content()
+
+        finally:
+            browser.close()
+
+    return BeautifulSoup(
+        html,
+        "html.parser",
+    )
 
 
 def extract_roles(soup: BeautifulSoup) -> dict:
-    text = clean(soup.get_text(" ", strip=True))
+    text = clean(
+        soup.get_text(
+            " ",
+            strip=True,
+        )
+    )
+
     result: dict[str, str] = {}
 
     boundary = "|".join(
@@ -135,7 +201,8 @@ def extract_roles(soup: BeautifulSoup) -> dict:
         for x in values
     )
 
-    # Primo tentativo: ricerca sull'intero testo della pagina.
+    # Primo tentativo:
+    # ricerca sull'intero testo della pagina.
     for role, aliases in ROLES.items():
 
         for alias in aliases:
@@ -153,6 +220,7 @@ def extract_roles(soup: BeautifulSoup) -> dict:
             )
 
             if match:
+
                 value = clean(
                     match.group(1)
                 ).strip(":- ")
@@ -161,13 +229,23 @@ def extract_roles(soup: BeautifulSoup) -> dict:
                     result[role] = value
                     break
 
-    # Secondo tentativo: ricerca nei singoli elementi HTML.
+    # Secondo tentativo:
+    # ricerca nei singoli elementi HTML.
     for tag in soup.find_all(
-        ["li", "p", "div", "span", "td"]
+        [
+            "li",
+            "p",
+            "div",
+            "span",
+            "td",
+        ]
     ):
 
         value = clean(
-            tag.get_text(" ", strip=True)
+            tag.get_text(
+                " ",
+                strip=True,
+            )
         )
 
         if not value or len(value) > 300:
@@ -192,16 +270,24 @@ def extract_roles(soup: BeautifulSoup) -> dict:
                     )
                     break
 
+
     return result
 
 
 def title_from_soup(soup: BeautifulSoup) -> str:
     for tag in soup.find_all(
-        ["h1", "h2", "title"]
+        [
+            "h1",
+            "h2",
+            "title",
+        ]
     ):
 
         value = clean(
-            tag.get_text(" ", strip=True)
+            tag.get_text(
+                " ",
+                strip=True,
+            )
         )
 
         if (
@@ -218,6 +304,7 @@ def title_from_soup(soup: BeautifulSoup) -> str:
 # ============================================================
 
 def hashtag(title: str) -> str:
+
     title = re.sub(
         r"\b(?:vs|v)\b",
         "",
@@ -310,7 +397,7 @@ COUNTRY_FLAGS = {
 def format_uefa_name(value: str) -> str:
     value = clean(value)
 
-    # Cerca il codice UEFA della nazionalità alla fine.
+    # Cerca il codice UEFA alla fine.
     match = re.search(
         r"\b([A-Z]{3})\s*$",
         value,
@@ -327,9 +414,17 @@ def format_uefa_name(value: str) -> str:
 
     parts = name.split()
 
-    # UEFA restituisce nome + cognome.
-    # Nel messaggio vogliamo solo il cognome.
-    surname = parts[-1] if parts else name
+    # Nome completo UEFA:
+    # Oleksii Derevinskyi UKR
+    #
+    # Messaggio:
+    # Derevinskyi 🇺🇦
+
+    surname = (
+        parts[-1]
+        if parts
+        else name
+    )
 
     flag = COUNTRY_FLAGS.get(
         code,
@@ -342,11 +437,14 @@ def format_uefa_name(value: str) -> str:
 def format_uefa_assistenti(value: str) -> str:
     value = clean(value)
 
-    # Esempio:
-    # Oleksii Myronov UKR Dmytro Zaporozhenko UKR
+    # Esempio UEFA:
     #
-    # Diventa:
-    # Myronov 🇺🇦 – Zaporozhenko 🇺🇦
+    # Oleksii Myronov UKR
+    # Dmytro Zaporozhenko UKR
+    #
+    # oppure tutto sulla stessa riga:
+    #
+    # Oleksii Myronov UKR Dmytro Zaporozhenko UKR
 
     matches = re.findall(
         r"(.+?)\s+([A-Z]{3})(?=\s|$)",
@@ -441,28 +539,45 @@ def process_url(
     history: dict,
 ) -> bool:
 
-    print(f"[ARBITRI] Controllo: {url}")
+    print(
+        f"[ARBITRI] Controllo: {url}"
+    )
 
     try:
-        soup = fetch_page(url)
+
+        if uefa:
+            soup = fetch_page_playwright(
+                url
+            )
+
+        else:
+            soup = fetch_page_requests(
+                url
+            )
 
     except Exception as exc:
+
         print(
             f"[ARBITRI] richiesta fallita: "
             f"{url} -> {exc}"
         )
+
         return False
 
     roles = extract_roles(soup)
 
     if not roles:
+
         print(
             "[ARBITRI] Nessuna designazione "
             "trovata."
         )
+
         return False
 
-    title = title_from_soup(soup)
+    title = title_from_soup(
+        soup
+    )
 
     message = format_message(
         prefix,
@@ -477,20 +592,24 @@ def process_url(
         + "\n"
     )
 
-    # La chiave dello storico è l'URL.
     history_key = url
 
-    # Salviamo il messaggio completo.
-    previous = history.get(history_key)
+    previous = history.get(
+        history_key
+    )
 
     if previous == message:
+
         print(
             "[ARBITRI] Designazione già "
             "presente nello storico."
         )
+
         return False
 
-    send_telegram(message)
+    send_telegram(
+        message
+    )
 
     history[history_key] = message
 
@@ -506,9 +625,10 @@ def process_url(
 # UEFA
 # ============================================================
 
-def check_uefa(history: dict) -> bool:
+def check_uefa(
+    history: dict,
+) -> bool:
 
-    # Juventus - NEC
     url = (
         "https://it.uefa.com/"
         "uefaeuropaleague/match/"
@@ -528,54 +648,73 @@ def check_uefa(history: dict) -> bool:
 # SERIE A / COPPA ITALIA / SUPERCOPPA
 # ============================================================
 
-def check_italy(history: dict) -> bool:
+def check_italy(
+    history: dict,
+) -> bool:
 
-    # Gli URL italiani vengono letti
-    # dal file di configurazione, se presente.
-
-    config_file = DATA_DIR / "partite_italia.json"
+    config_file = (
+        DATA_DIR /
+        "partite_italia.json"
+    )
 
     if not config_file.exists():
+
         print(
             "[ARBITRI] Nessun file "
             "partite_italia.json trovato."
         )
+
         return False
 
     try:
+
         with config_file.open(
             "r",
             encoding="utf-8",
         ) as f:
+
             matches = json.load(f)
 
     except Exception as exc:
+
         print(
             f"[ARBITRI] Errore lettura "
             f"{config_file}: {exc}"
         )
+
         return False
 
-    if not isinstance(matches, list):
+    if not isinstance(
+        matches,
+        list,
+    ):
+
         print(
             "[ARBITRI] partite_italia.json "
             "non contiene una lista."
         )
+
         return False
 
     changed = False
 
     for item in matches:
 
-        if not isinstance(item, dict):
+        if not isinstance(
+            item,
+            dict,
+        ):
             continue
 
-        url = item.get("url")
+        url = item.get(
+            "url"
+        )
 
         if not url:
             continue
 
         try:
+
             result = process_url(
                 url=url,
                 prefix="🇮🇹ℹ️",
@@ -587,6 +726,7 @@ def check_italy(history: dict) -> bool:
                 changed = True
 
         except Exception as exc:
+
             print(
                 f"[ARBITRI] Errore durante "
                 f"il controllo di {url}: {exc}"
@@ -610,33 +750,56 @@ def main() -> None:
 
     changed = False
 
+    # --------------------------------------------------------
     # UEFA
+    # --------------------------------------------------------
+
     try:
-        if check_uefa(history):
+
+        if check_uefa(
+            history
+        ):
             changed = True
 
     except Exception as exc:
+
         print(
             f"[ARBITRI] Errore UEFA: {exc}"
         )
 
-    # Italia
+    # --------------------------------------------------------
+    # ITALIA
+    # --------------------------------------------------------
+
     try:
-        if check_italy(history):
+
+        if check_italy(
+            history
+        ):
             changed = True
 
     except Exception as exc:
+
         print(
             f"[ARBITRI] Errore Italia: {exc}"
         )
 
+    # --------------------------------------------------------
+    # SALVATAGGIO STORICO
+    # --------------------------------------------------------
+
     if changed:
-        save_history(history)
+
+        save_history(
+            history
+        )
+
         print(
             "[ARBITRI] Storico aggiornato."
         )
 
     else:
+
         print(
             "[ARBITRI] Nessuna nuova "
             "designazione."
