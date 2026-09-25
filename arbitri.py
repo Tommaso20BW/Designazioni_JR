@@ -18,16 +18,29 @@ STATE_FILE = BASE_DIR / "data" / "designazioni.json"
 TOKEN   = os.getenv("TELEGRAM_TOKEN", "").strip()
 CHAT_ID = os.getenv("CHAT_ID", "").strip()
 
-TIMEOUT = 15   # ridotto da 30
-RETRIES = 2    # ridotto da 4
+TIMEOUT = 15
+RETRIES = 2
 
-UEFA = {
-    "Champions League": "https://it.uefa.com/uefachampionsleague/clubs/50139--juventus/matches/",
-    "Europa League":    "https://it.uefa.com/uefaeuropaleague/clubs/50139--juventus/matches/",
-    # fix: mancava .com nel dominio
-    "Conference League": "https://it.uefa.com/uefaeuropaconferenceleague/clubs/50139--juventus/matches/",
+# ── SofaScore ─────────────────────────────────────────────────────────────────
+# it.uefa.com blocca i client non-browser (SPA React + IP cloud in blocklist).
+# SofaScore espone le stesse designazioni tramite API JSON, senza JS.
+
+JUVENTUS_SS = 2687        # ID Juventus su SofaScore
+
+# uniqueTournament IDs su SofaScore
+SOFASCORE_UEFA = {
+    "Champions League":  7,
+    "Europa League":     679,
+    "Conference League": 17,
 }
 
+SS_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36",
+    "Referer":    "https://www.sofascore.com/",
+    "Accept":     "application/json",
+}
+
+# ── AIA ───────────────────────────────────────────────────────────────────────
 AIA      = "https://www.aia-figc.it/news/?c=9"
 AIA_HOST = "www.aia-figc.it"
 
@@ -58,19 +71,19 @@ def clean(s: str) -> str:
     return re.sub(r"\s+", " ", s or "").strip()
 
 
-def request(url: str) -> requests.Response:
+def http_get(url: str, headers: dict | None = None) -> requests.Response:
     last = None
     for attempt in range(1, RETRIES + 1):
         try:
             print(f"[HTTP] {attempt}/{RETRIES} {url}")
-            r = session.get(url, timeout=TIMEOUT)
+            r = session.get(url, headers=headers, timeout=TIMEOUT)
             r.raise_for_status()
             return r
         except requests.RequestException as exc:
             last = exc
             print(f"[HTTP] errore: {exc}")
             if attempt < RETRIES:
-                time.sleep(attempt * 2)   # 2s invece di 4s×attempt
+                time.sleep(attempt * 2)
     raise RuntimeError(f"richiesta fallita: {url} -> {last}")
 
 
@@ -109,7 +122,7 @@ def send_telegram(text: str) -> None:
         raise RuntimeError(str(r.json()))
 
 
-# ── parsing ───────────────────────────────────────────────────────────────────
+# ── parsing AIA ───────────────────────────────────────────────────────────────
 
 def parse_date(text: str) -> str | None:
     m = re.search(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b", text)
@@ -174,83 +187,94 @@ def format_message(prefix: str, title: str, roles: dict) -> str:
     return "\n".join(lines)
 
 
-# ── UEFA ──────────────────────────────────────────────────────────────────────
+# ── UEFA via SofaScore ────────────────────────────────────────────────────────
 
-def match_id(url: str) -> str | None:
-    m = re.search(r"/match/(\d+)", url)
-    return m.group(1) if m else None
+def ss_get(path: str) -> dict:
+    url = f"https://api.sofascore.com/api/v1{path}"
+    return http_get(url, headers=SS_HEADERS).json()
 
 
-def find_match_links(soup: BeautifulSoup) -> list[str]:
-    found = set()
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if "/match/" not in href:
-            continue
-        mid = match_id(href)
-        if not mid:
-            continue
-        href = href.split("?", 1)[0].split("#", 1)[0]
-        if "/matchinfo" not in href:
-            href = href.rstrip("/") + "/matchinfo/"
-        found.add(urljoin("https://it.uefa.com", href))
-    return sorted(found)
+def ss_roles(event: dict) -> dict:
+    """Estrae arbitro e assistenti dall'evento SofaScore."""
+    roles: dict[str, str] = {}
+
+    # arbitro principale
+    ref = event.get("referee")
+    if ref:
+        name = ref.get("name", "")
+        country = ref.get("country", {}).get("name", "")
+        roles["ARBITRO"] = f"{name} ({country})" if country else name
+
+    return roles
 
 
 def check_uefa(state: dict) -> bool:
+    # mappa inversa: sofascore uniqueTournament id → nome competizione
+    id_to_comp = {v: k for k, v in SOFASCORE_UEFA.items()}
+
+    try:
+        data = ss_get(f"/team/{JUVENTUS_SS}/events/next/0")
+    except Exception as exc:
+        print(f"[UEFA] SofaScore upcoming: {exc}")
+        return False
+
+    events = data.get("events", [])
+    print(f"[UEFA] SofaScore: {len(events)} prossime partite totali")
+
     changed = False
-    for competition, calendar in UEFA.items():
-        try:
-            soup = BeautifulSoup(request(calendar).text, "html.parser")
-        except Exception as exc:
-            print(f"[UEFA] {competition}: {exc}")
+    for event in events:
+        # identifica se è una competizione UEFA
+        ut_id = (
+            event.get("tournament", {})
+                 .get("uniqueTournament", {})
+                 .get("id")
+        )
+        if ut_id not in id_to_comp:
             continue
 
-        links = find_match_links(soup)
-        print(f"[UEFA] {competition}: {len(links)} partite trovate")
+        competition = id_to_comp[ut_id]
+        event_id    = event["id"]
+        key         = f"{competition}:{event_id}"
 
-        for url in links:
-            mid = match_id(url)
-            if not mid:
-                continue
-            key = f"{competition}:{mid}"
-            if key in state["uefa"]:
-                print(f"[SKIP] {key}")
-                continue
+        if key in state["uefa"]:
+            print(f"[SKIP] {key}")
+            continue
 
-            try:
-                page = BeautifulSoup(request(url).text, "html.parser")
-            except Exception as exc:
-                print(f"[UEFA] match {mid}: {exc}")
-                continue
+        # dettaglio partita per l'arbitro
+        try:
+            detail = ss_get(f"/event/{event_id}")
+        except Exception as exc:
+            print(f"[UEFA] event {event_id}: {exc}")
+            continue
 
-            text = clean(page.get_text(" ", strip=True))
-            if "juventus" not in text.lower():
-                continue
+        ev    = detail.get("event", {})
+        roles = ss_roles(ev)
 
-            roles = extract_roles(page)
-            if not roles.get("ARBITRO"):
-                continue
+        if not roles.get("ARBITRO"):
+            print(f"[UEFA] {competition} {event_id}: arbitro non ancora designato")
+            continue
 
-            title   = title_from_soup(page)
-            message = format_message("🇪🇺ℹ️", title, roles)
+        home  = ev.get("homeTeam", {}).get("name", "?")
+        away  = ev.get("awayTeam", {}).get("name", "?")
+        title = f"{home} - {away}"
 
-            try:
-                send_telegram(message)
-            except Exception as exc:
-                print(f"[UEFA] Telegram: {exc}")
-                continue
+        message = format_message("🇪🇺ℹ️", title, roles)
 
-            state["uefa"][key] = {
-                "competition": competition,
-                "match_id":    mid,
-                "match":       title,
-                "url":         url,
-                "sent_at":     datetime.now(ROME).isoformat(),
-            }
-            save_state(state)
-            changed = True
-            print(f"[SENT] {key}")
+        try:
+            send_telegram(message)
+        except Exception as exc:
+            print(f"[UEFA] Telegram: {exc}")
+            continue
+
+        state["uefa"][key] = {
+            "competition": competition,
+            "event_id":    event_id,
+            "match":       title,
+            "sent_at":     datetime.now(ROME).isoformat(),
+        }
+        save_state(state)
+        changed = True
+        print(f"[SENT] {key}")
 
     return changed
 
@@ -258,15 +282,8 @@ def check_uefa(state: dict) -> bool:
 # ── AIA Italia ────────────────────────────────────────────────────────────────
 
 def article_links(soup: BeautifulSoup) -> list[str]:
-    """
-    Solo link che sembrano articoli reali su aia-figc.it:
-    - stesso host
-    - path con almeno 2 segmenti (es. /news/12345/)
-    - nessun query string (esclude ?c=9 e simili)
-    - anchor non vuoto
-    - anchor o href contiene "juventus" o "juve" (evita di scaricare articoli irrilevanti)
-    """
-    seen: set[str] = set()
+    """Solo link che sembrano articoli Juventus su aia-figc.it."""
+    seen:   set[str]  = set()
     result: list[str] = []
 
     for a in soup.find_all("a", href=True):
@@ -280,20 +297,20 @@ def article_links(soup: BeautifulSoup) -> list[str]:
         if parsed.netloc != AIA_HOST:
             continue
         if parsed.query:
-            continue   # esclude ?c=9 ecc.
+            continue  # esclude ?c=9 e simili
 
         segments = [s for s in parsed.path.rstrip("/").split("/") if s]
         if len(segments) < 2:
-            continue   # esclude /news/ e pagine di primo livello
+            continue  # esclude /news/ e pagine di primo livello
 
         anchor = clean(a.get_text(" ", strip=True))
         if not anchor:
             continue
 
-        # pre-filtro: segui solo link che già menzionano Juventus
-        needle = anchor.lower() + href.lower()
-        if "juventus" not in needle and "juve" not in needle:
-            continue
+        # pre-filtro: segui solo articoli che già menzionano Juventus
+        if "juventus" not in anchor.lower() and "juventus" not in href.lower():
+            if "juve" not in anchor.lower():
+                continue
 
         if full not in seen:
             seen.add(full)
@@ -306,7 +323,7 @@ def check_italia(state: dict) -> bool:
     today = datetime.now(ROME).date().isoformat()
 
     try:
-        index_soup = BeautifulSoup(request(AIA).text, "html.parser")
+        index_soup = BeautifulSoup(http_get(AIA).text, "html.parser")
     except Exception as exc:
         print(f"[ITALIA] AIA index: {exc}")
         return False
@@ -322,7 +339,7 @@ def check_italia(state: dict) -> bool:
             continue
 
         try:
-            soup = BeautifulSoup(request(url).text, "html.parser")
+            soup = BeautifulSoup(http_get(url).text, "html.parser")
         except Exception as exc:
             print(f"[ITALIA] {url}: {exc}")
             continue
