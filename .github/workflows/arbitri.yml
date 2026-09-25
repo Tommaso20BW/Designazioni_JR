@@ -28,6 +28,9 @@ jobs:
       - name: Installa dipendenze
         run: pip install -r requirements.txt
 
+      - name: Installa browser Playwright
+        run: python -m playwright install chromium
+
       - name: Controlla designazioni
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
