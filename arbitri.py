@@ -201,12 +201,8 @@ def title_from_soup(soup):
     return "Juventus"
 
 
-# Emoji Unicode (fallback per bandiere senza custom_emoji_id: ENG/SCO/WAL/NIR)
-COUNTRY_FLAGS = {
-    "ROU": "🇷🇴", "RUS": "🇷🇺", "SMR": "🇸🇲", "SRB": "🇷🇸", "SUI": "🇨🇭",
-    "SVK": "🇸🇰", "SVN": "🇸🇮", "SWE": "🇸🇪", "TUR": "🇹🇷", "UKR": "🇺🇦",
-    "ENG": "🏴󠁧󠁢󠁥󠁮󠁧󠁿", "SCO": "🏴󠁧󠁢󠁳󠁣󠁴󠁿", "WAL": "🏴󠁧󠁢󠁷󠁬󠁳󠁿", "NIR": "🇬🇧",
-}
+# Emoji Unicode (fallback per codici nazione non in COUNTRY_CUSTOM_EMOJI)
+COUNTRY_FLAGS: dict[str, str] = {}
 
 # custom_emoji_id per le bandiere UEFA (premium Telegram)
 # Ogni entry: codice 3 lettere → (emoji_unicode_di_base, custom_emoji_id)
@@ -251,6 +247,20 @@ COUNTRY_CUSTOM_EMOJI: dict[str, tuple[str, str]] = {
     "NOR": ("🇳🇴", "5382300771641470186"),
     "POL": ("🇵🇱", "5291847690940852675"),
     "POR": ("🇵🇹", "5382075788369605892"),
+    "ROU": ("🇷🇴", "5411159898148840778"),
+    "RUS": ("🇷🇺", "5449408995691341691"),
+    "SMR": ("🇸🇲", "5228954998766843234"),
+    "SRB": ("🇷🇸", "5384313376136507326"),
+    "SUI": ("🇨🇭", "5442703336266543270"),
+    "SVK": ("🇸🇰", "5381967160056755878"),
+    "SVN": ("🇸🇮", "5440874620796284751"),
+    "SWE": ("🇸🇪", "5384542551296455687"),
+    "TUR": ("🇹🇷", "5226948110873278599"),
+    "UKR": ("🇺🇦", "5447309366568953338"),
+    "ENG": ("🏴󠁧󠁢󠁥󠁮󠁧󠁿", "5229192892710402006"),
+    "SCO": ("🏴󠁧󠁢󠁳󠁣󠁴󠁿", "5226852401822057871"),
+    "WAL": ("🏴󠁧󠁢󠁷󠁬󠁳󠁿", "5228957348113955582"),
+    "NIR": ("🇬🇧", "5202196682497859879"),
 }
 
 # Prefissi con custom emoji (testo base + custom_emoji_id)
