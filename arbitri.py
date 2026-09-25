@@ -5,26 +5,31 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup
 
-ROME = ZoneInfo("Europe/Rome")
-BASE_DIR = Path(__file__).resolve().parent
+ROME       = ZoneInfo("Europe/Rome")
+BASE_DIR   = Path(__file__).resolve().parent
 STATE_FILE = BASE_DIR / "data" / "designazioni.json"
-TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
+
+TOKEN   = os.getenv("TELEGRAM_TOKEN", "").strip()
 CHAT_ID = os.getenv("CHAT_ID", "").strip()
-TIMEOUT = 30
-RETRIES = 4
+
+TIMEOUT = 15   # ridotto da 30
+RETRIES = 2    # ridotto da 4
 
 UEFA = {
-    "Champions League": "https://it.uefa.com/uefachampionsleague/clubs/50139/matches/",
-    "Europa League": "https://it.uefa.com/uefaeuropaleague/clubs/50139--juventus/matches/",
-    "Conference League": "https://it.uefaeuropaconferenceleague/clubs/50139--juventus/matches/",
+    "Champions League": "https://it.uefa.com/uefachampionsleague/clubs/50139--juventus/matches/",
+    "Europa League":    "https://it.uefa.com/uefaeuropaleague/clubs/50139--juventus/matches/",
+    # fix: mancava .com nel dominio
+    "Conference League": "https://it.uefa.com/uefaeuropaconferenceleague/clubs/50139--juventus/matches/",
 }
-AIA = "https://www.aia-figc.it/news/?c=9"
+
+AIA      = "https://www.aia-figc.it/news/?c=9"
+AIA_HOST = "www.aia-figc.it"
 
 session = requests.Session()
 session.headers.update({
@@ -33,19 +38,27 @@ session.headers.update({
 })
 
 ROLES = {
-    "ARBITRO": ["arbitro", "referee"],
+    "ARBITRO":    ["arbitro", "referee"],
     "ASSISTENTI": ["assistenti", "assistant referees", "assistant referee"],
-    "IV": ["iv", "quarto ufficiale", "fourth official"],
-    "VAR": ["var"],
-    "AVAR": ["avar"],
+    "IV":         ["iv", "quarto ufficiale", "fourth official"],
+    "VAR":        ["var"],
+    "AVAR":       ["avar"],
+}
+
+MONTHS = {
+    "gennaio": 1, "febbraio": 2, "marzo": 3, "aprile": 4,
+    "maggio": 5, "giugno": 6, "luglio": 7, "agosto": 8,
+    "settembre": 9, "ottobre": 10, "novembre": 11, "dicembre": 12,
 }
 
 
-def clean(s):
+# ── utilità ───────────────────────────────────────────────────────────────────
+
+def clean(s: str) -> str:
     return re.sub(r"\s+", " ", s or "").strip()
 
 
-def request(url):
+def request(url: str) -> requests.Response:
     last = None
     for attempt in range(1, RETRIES + 1):
         try:
@@ -57,11 +70,13 @@ def request(url):
             last = exc
             print(f"[HTTP] errore: {exc}")
             if attempt < RETRIES:
-                time.sleep(attempt * 4)
+                time.sleep(attempt * 2)   # 2s invece di 4s×attempt
     raise RuntimeError(f"richiesta fallita: {url} -> {last}")
 
 
-def load_state():
+# ── stato ─────────────────────────────────────────────────────────────────────
+
+def load_state() -> dict:
     if not STATE_FILE.exists():
         return {"uefa": {}, "italia": {}}
     try:
@@ -73,13 +88,15 @@ def load_state():
         return {"uefa": {}, "italia": {}}
 
 
-def save_state(state):
+def save_state(state: dict) -> None:
     tmp = STATE_FILE.with_suffix(".tmp")
     tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     tmp.replace(STATE_FILE)
 
 
-def send_telegram(text):
+# ── telegram ──────────────────────────────────────────────────────────────────
+
+def send_telegram(text: str) -> None:
     if not TOKEN or not CHAT_ID:
         raise RuntimeError("Secret mancanti: configura TELEGRAM_TOKEN e CHAT_ID.")
     r = requests.post(
@@ -92,12 +109,79 @@ def send_telegram(text):
         raise RuntimeError(str(r.json()))
 
 
-def match_id(url):
+# ── parsing ───────────────────────────────────────────────────────────────────
+
+def parse_date(text: str) -> str | None:
+    m = re.search(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b", text)
+    if m:
+        return f"{m.group(3)}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
+    m = re.search(r"\b(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})\b", text, re.I)
+    if m and m.group(2).lower() in MONTHS:
+        return f"{m.group(3)}-{MONTHS[m.group(2).lower()]:02d}-{int(m.group(1)):02d}"
+    return None
+
+
+def extract_roles(soup: BeautifulSoup) -> dict:
+    text = clean(soup.get_text(" ", strip=True))
+    result: dict[str, str] = {}
+    boundary = "|".join(re.escape(x) for v in ROLES.values() for x in v)
+
+    for role, aliases in ROLES.items():
+        for alias in aliases:
+            pat = rf"\b{re.escape(alias)}\b\s*[:\-]?\s*(.+?)(?=\s+(?:{boundary})\b|$)"
+            m = re.search(pat, text, re.I)
+            if m:
+                val = clean(m.group(1)).strip(":- ")
+                if val:
+                    result[role] = val
+                    break
+
+    for tag in soup.find_all(["li", "p", "div", "span", "td"]):
+        val = clean(tag.get_text(" ", strip=True))
+        if not val or len(val) > 300:
+            continue
+        for role, aliases in ROLES.items():
+            if role in result:
+                continue
+            for alias in aliases:
+                m = re.match(rf"^{re.escape(alias)}\s*[:\-]\s*(.+)$", val, re.I)
+                if m:
+                    result[role] = clean(m.group(1))
+                    break
+
+    return result
+
+
+def title_from_soup(soup: BeautifulSoup) -> str:
+    for tag in soup.find_all(["h1", "h2", "title"]):
+        val = clean(tag.get_text(" ", strip=True))
+        if "juventus" in val.lower() and len(val) < 180:
+            return val
+    return "Juventus"
+
+
+def hashtag(title: str) -> str:
+    title = re.sub(r"\b(?:vs|v)\b", "", title, flags=re.I)
+    title = re.sub(r"[^A-Za-z0-9À-ÖØ-öø-ÿ]", "", title)
+    return title or "Juve"
+
+
+def format_message(prefix: str, title: str, roles: dict) -> str:
+    lines = [f"{prefix} Designazione arbitrale di #{hashtag(title)}:", ""]
+    for role in ("ARBITRO", "ASSISTENTI", "IV", "VAR", "AVAR"):
+        if roles.get(role):
+            lines.append(f"{role}: {roles[role]}")
+    return "\n".join(lines)
+
+
+# ── UEFA ──────────────────────────────────────────────────────────────────────
+
+def match_id(url: str) -> str | None:
     m = re.search(r"/match/(\d+)", url)
     return m.group(1) if m else None
 
 
-def find_match_links(soup):
+def find_match_links(soup: BeautifulSoup) -> list[str]:
     found = set()
     for a in soup.find_all("a", href=True):
         href = a["href"]
@@ -113,66 +197,8 @@ def find_match_links(soup):
     return sorted(found)
 
 
-def extract_roles(soup):
-    text = clean(soup.get_text(" ", strip=True))
-    result = {}
-
-    labels = []
-    for values in ROLES.values():
-        labels.extend(values)
-    boundary = "|".join(re.escape(x) for x in labels)
-
-    for role, aliases in ROLES.items():
-        for alias in aliases:
-            pattern = rf"\b{re.escape(alias)}\b\s*[:\-]?\s*(.+?)(?=\s+(?:{boundary})\b|$)"
-            m = re.search(pattern, text, re.I)
-            if m:
-                value = clean(m.group(1)).strip(":- ")
-                if value:
-                    result[role] = value
-                    break
-
-    for tag in soup.find_all(["li", "p", "div", "span", "td"]):
-        value = clean(tag.get_text(" ", strip=True))
-        if not value or len(value) > 300:
-            continue
-        for role, aliases in ROLES.items():
-            if role in result:
-                continue
-            for alias in aliases:
-                m = re.match(rf"^{re.escape(alias)}\s*[:\-]\s*(.+)$", value, re.I)
-                if m:
-                    result[role] = clean(m.group(1))
-                    break
-
-    return result
-
-
-def title_from_soup(soup):
-    for tag in soup.find_all(["h1", "h2", "title"]):
-        value = clean(tag.get_text(" ", strip=True))
-        if "juventus" in value.lower() and len(value) < 180:
-            return value
-    return "Juventus"
-
-
-def hashtag(title):
-    title = re.sub(r"\b(?:vs|v)\b", "", title, flags=re.I)
-    title = re.sub(r"[^A-Za-z0-9À-ÖØ-öø-ÿ]", "", title)
-    return title or "Juve"
-
-
-def format_message(prefix, title, roles):
-    lines = [f"{prefix} Designazione arbitrale di #{hashtag(title)}:", ""]
-    for role in ("ARBITRO", "ASSISTENTI", "IV", "VAR", "AVAR"):
-        if roles.get(role):
-            lines.append(f"{role}: {roles[role]}")
-    return "\n".join(lines)
-
-
-def check_uefa(state):
+def check_uefa(state: dict) -> bool:
     changed = False
-
     for competition, calendar in UEFA.items():
         try:
             soup = BeautifulSoup(request(calendar).text, "html.parser")
@@ -187,7 +213,6 @@ def check_uefa(state):
             mid = match_id(url)
             if not mid:
                 continue
-
             key = f"{competition}:{mid}"
             if key in state["uefa"]:
                 print(f"[SKIP] {key}")
@@ -207,7 +232,7 @@ def check_uefa(state):
             if not roles.get("ARBITRO"):
                 continue
 
-            title = title_from_soup(page)
+            title   = title_from_soup(page)
             message = format_message("🇪🇺ℹ️", title, roles)
 
             try:
@@ -218,10 +243,10 @@ def check_uefa(state):
 
             state["uefa"][key] = {
                 "competition": competition,
-                "match_id": mid,
-                "match": title,
-                "url": url,
-                "sent_at": datetime.now(ROME).isoformat(),
+                "match_id":    mid,
+                "match":       title,
+                "url":         url,
+                "sent_at":     datetime.now(ROME).isoformat(),
             }
             save_state(state)
             changed = True
@@ -230,63 +255,89 @@ def check_uefa(state):
     return changed
 
 
-def parse_date(text):
-    months = {
-        "gennaio": 1, "febbraio": 2, "marzo": 3, "aprile": 4,
-        "maggio": 5, "giugno": 6, "luglio": 7, "agosto": 8,
-        "settembre": 9, "ottobre": 10, "novembre": 11, "dicembre": 12,
-    }
+# ── AIA Italia ────────────────────────────────────────────────────────────────
 
-    m = re.search(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b", text)
-    if m:
-        return f"{int(m.group(3)):04d}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
+def article_links(soup: BeautifulSoup) -> list[str]:
+    """
+    Solo link che sembrano articoli reali su aia-figc.it:
+    - stesso host
+    - path con almeno 2 segmenti (es. /news/12345/)
+    - nessun query string (esclude ?c=9 e simili)
+    - anchor non vuoto
+    - anchor o href contiene "juventus" o "juve" (evita di scaricare articoli irrilevanti)
+    """
+    seen: set[str] = set()
+    result: list[str] = []
 
-    m = re.search(r"\b(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})\b", text, re.I)
-    if m and m.group(2).lower() in months:
-        return f"{m.group(3)}-{months[m.group(2).lower()]:02d}-{int(m.group(1)):02d}"
-
-    return None
-
-
-def article_links(soup):
-    result = []
     for a in soup.find_all("a", href=True):
-        if clean(a.get_text(" ", strip=True)):
-            result.append(urljoin(AIA, a["href"]))
-    return list(dict.fromkeys(result))
+        href: str = a["href"]
+        if href.startswith(("#", "javascript:", "mailto:")):
+            continue
+
+        full   = urljoin(AIA, href)
+        parsed = urlparse(full)
+
+        if parsed.netloc != AIA_HOST:
+            continue
+        if parsed.query:
+            continue   # esclude ?c=9 ecc.
+
+        segments = [s for s in parsed.path.rstrip("/").split("/") if s]
+        if len(segments) < 2:
+            continue   # esclude /news/ e pagine di primo livello
+
+        anchor = clean(a.get_text(" ", strip=True))
+        if not anchor:
+            continue
+
+        # pre-filtro: segui solo link che già menzionano Juventus
+        needle = anchor.lower() + href.lower()
+        if "juventus" not in needle and "juve" not in needle:
+            continue
+
+        if full not in seen:
+            seen.add(full)
+            result.append(full)
+
+    return result
 
 
-def check_italia(state):
+def check_italia(state: dict) -> bool:
     today = datetime.now(ROME).date().isoformat()
 
     try:
-        index = BeautifulSoup(request(AIA).text, "html.parser")
+        index_soup = BeautifulSoup(request(AIA).text, "html.parser")
     except Exception as exc:
-        print(f"[ITALIA] AIA: {exc}")
+        print(f"[ITALIA] AIA index: {exc}")
         return False
 
-    changed = False
+    links = article_links(index_soup)
+    print(f"[ITALIA] {len(links)} articoli Juventus trovati nell'indice")
 
-    for url in article_links(index):
+    changed = False
+    for url in links:
+        key = f"{today}:{url}"
+        if key in state["italia"]:
+            print(f"[SKIP] {key}")
+            continue
+
         try:
             soup = BeautifulSoup(request(url).text, "html.parser")
-        except Exception:
+        except Exception as exc:
+            print(f"[ITALIA] {url}: {exc}")
             continue
 
         text = clean(soup.get_text(" ", strip=True))
-        if parse_date(text) != today or "juventus" not in text.lower():
+        if parse_date(text) != today:
+            continue
+        if "juventus" not in text.lower():
             continue
 
         roles = extract_roles(soup)
         if not roles.get("ARBITRO"):
             continue
 
-        key = f"{today}:{url}"
-        if key in state["italia"]:
-            print(f"[SKIP] {key}")
-            continue
-
-        title = title_from_soup(soup)
+        title   = title_from_soup(soup)
         message = format_message("🇮🇹ℹ️", title, roles)
 
         try:
@@ -296,9 +347,9 @@ def check_italia(state):
             continue
 
         state["italia"][key] = {
-            "date": today,
-            "match": title,
-            "url": url,
+            "date":    today,
+            "match":   title,
+            "url":     url,
             "sent_at": datetime.now(ROME).isoformat(),
         }
         save_state(state)
@@ -308,13 +359,13 @@ def check_italia(state):
     return changed
 
 
-def main():
+# ── entry point ───────────────────────────────────────────────────────────────
+
+def main() -> None:
     state = load_state()
     print(f"[START] {datetime.now(ROME).isoformat()}")
-
     check_uefa(state)
     check_italia(state)
-
     print("[DONE] Controllo completato.")
 
 
