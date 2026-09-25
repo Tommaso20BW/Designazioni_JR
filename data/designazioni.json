@@ -1,12 +1,5 @@
 {
   "uefa": {
-    "Europa League:2050066": {
-      "competition": "Europa League",
-      "match_id": "2050066",
-      "match": "Juventus vs N.E.C.",
-      "url": "https://it.uefa.com/uefaeuropaleague/match/2050066--juventus-vs-n-e-c/matchinfo/",
-      "sent_at": "2026-09-25T14:32:57.451701+02:00"
-    }
-  },
+    "Europa League:2050066": {},
   "italia": {}
 }
