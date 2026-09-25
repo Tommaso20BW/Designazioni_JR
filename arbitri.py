@@ -1,3 +1,4 @@
+```python
 import json
 import os
 import re
@@ -124,6 +125,8 @@ def send_telegram(message: str) -> None:
 # ============================================================
 
 def fetch_page_requests(url: str) -> BeautifulSoup:
+    print("[ITALIA] Utilizzo requests...")
+
     response = requests.get(
         url,
         headers=HEADERS,
@@ -161,17 +164,17 @@ def fetch_page_playwright(url: str) -> BeautifulSoup:
             )
 
             # La pagina UEFA è dinamica.
-            # Aspettiamo che il contenuto venga renderizzato.
+            # Aspettiamo il caricamento della rete.
             try:
-                page.wait_for_selector(
-                    "body",
+                page.wait_for_load_state(
+                    "networkidle",
                     timeout=15000,
                 )
             except Exception:
                 pass
 
-            # Piccola attesa per il caricamento
-            # dei dati arbitrali dinamici.
+            # Tempo aggiuntivo per il rendering
+            # dei dati caricati dinamicamente.
             page.wait_for_timeout(3000)
 
             html = page.content()
@@ -185,52 +188,14 @@ def fetch_page_playwright(url: str) -> BeautifulSoup:
     )
 
 
-def extract_roles(soup: BeautifulSoup) -> dict:
-    text = clean(
-        soup.get_text(
-            " ",
-            strip=True,
-        )
-    )
+# ============================================================
+# PARSER ITALIA
+# ============================================================
 
+def extract_roles_italy(soup: BeautifulSoup) -> dict:
     result: dict[str, str] = {}
 
-    boundary = "|".join(
-        re.escape(x)
-        for values in ROLES.values()
-        for x in values
-    )
-
-    # Primo tentativo:
-    # ricerca sull'intero testo della pagina.
-    for role, aliases in ROLES.items():
-
-        for alias in aliases:
-
-            pattern = (
-                rf"\b{re.escape(alias)}\b"
-                rf"\s*[:\-]?\s*(.+?)"
-                rf"(?=\s+(?:{boundary})\b|$)"
-            )
-
-            match = re.search(
-                pattern,
-                text,
-                re.I,
-            )
-
-            if match:
-
-                value = clean(
-                    match.group(1)
-                ).strip(":- ")
-
-                if value:
-                    result[role] = value
-                    break
-
-    # Secondo tentativo:
-    # ricerca nei singoli elementi HTML.
+    # Prima cerchiamo nei singoli elementi.
     for tag in soup.find_all(
         [
             "li",
@@ -238,6 +203,7 @@ def extract_roles(soup: BeautifulSoup) -> dict:
             "div",
             "span",
             "td",
+            "tr",
         ]
     ):
 
@@ -265,26 +231,353 @@ def extract_roles(soup: BeautifulSoup) -> dict:
                 )
 
                 if match:
-                    result[role] = clean(
+                    extracted = clean(
                         match.group(1)
                     )
+
+                    if extracted:
+                        result[role] = extracted
+
                     break
 
+    # Fallback sul testo completo.
+    if not result:
+
+        text = clean(
+            soup.get_text(
+                " ",
+                strip=True,
+            )
+        )
+
+        boundary = "|".join(
+            re.escape(alias)
+            for aliases in ROLES.values()
+            for alias in aliases
+        )
+
+        for role, aliases in ROLES.items():
+
+            for alias in aliases:
+
+                pattern = (
+                    rf"\b{re.escape(alias)}\b"
+                    rf"\s*[:\-]?\s*(.+?)"
+                    rf"(?=\s+(?:{boundary})\b|$)"
+                )
+
+                match = re.search(
+                    pattern,
+                    text,
+                    re.I,
+                )
+
+                if match:
+                    extracted = clean(
+                        match.group(1)
+                    ).strip(":- ")
+
+                    if extracted:
+                        result[role] = extracted
+                        break
 
     return result
 
 
-def title_from_soup(soup: BeautifulSoup) -> str:
+# ============================================================
+# PARSER UEFA
+# ============================================================
+
+def clean_uefa_value(value: str) -> str:
+    """
+    Restituisce solamente il blocco:
+    Nome Cognome COD
+    ignorando completamente il testo successivo.
+    """
+
+    value = clean(value)
+
+    if not value:
+        return ""
+
+    # Primo codice UEFA trovato.
+    match = re.search(
+        r"\b([A-Z]{3})\b",
+        value,
+    )
+
+    if match:
+        value = value[:match.end()]
+
+    return clean(value).strip(":- ")
+
+
+def extract_uefa_role_from_element(
+    element,
+    aliases: list[str],
+) -> str:
+
+    text = clean(
+        element.get_text(
+            " ",
+            strip=True,
+        )
+    )
+
+    if not text or len(text) > 500:
+        return ""
+
+    for alias in aliases:
+
+        match = re.match(
+            rf"^{re.escape(alias)}\s*[:\-]?\s*(.+)$",
+            text,
+            re.I,
+        )
+
+        if match:
+            return clean_uefa_value(
+                match.group(1)
+            )
+
+    return ""
+
+
+def extract_uefa_roles(soup: BeautifulSoup) -> dict:
+    """
+    Parser UEFA.
+
+    Non utilizza più il body completo come prima scelta.
+    Cerca i ruoli nei singoli elementi HTML e limita
+    ogni valore al primo codice nazionale UEFA.
+    """
+
+    result: dict[str, str] = {}
+
+    tags = soup.find_all(
+        [
+            "li",
+            "p",
+            "div",
+            "span",
+            "td",
+            "tr",
+        ]
+    )
+
+    # Gli elementi più piccoli sono generalmente
+    # quelli che contengono il singolo ruolo.
+    tags = sorted(
+        tags,
+        key=lambda tag: len(
+            clean(
+                tag.get_text(
+                    " ",
+                    strip=True,
+                )
+            )
+        )
+    )
+
+    for tag in tags:
+
+        text = clean(
+            tag.get_text(
+                " ",
+                strip=True,
+            )
+        )
+
+        if not text or len(text) > 500:
+            continue
+
+        for role, aliases in ROLES.items():
+
+            if role in result:
+                continue
+
+            value = extract_uefa_role_from_element(
+                tag,
+                aliases,
+            )
+
+            if value:
+                result[role] = value
+
+                print(
+                    f"[UEFA] {role}: {value}"
+                )
+
+                break
+
+    # --------------------------------------------------------
+    # Fallback molto restrittivo.
+    # --------------------------------------------------------
+
+    if not result:
+
+        print(
+            "[UEFA] Nessun ruolo trovato "
+            "nei singoli elementi."
+        )
+
+        text = clean(
+            soup.get_text(
+                " ",
+                strip=True,
+            )
+        )
+
+        for role, aliases in ROLES.items():
+
+            for alias in aliases:
+
+                # IMPORTANTISSIMO:
+                # il match termina al PRIMO codice
+                # nazionale di tre lettere.
+                pattern = (
+                    rf"\b{re.escape(alias)}\b"
+                    rf"\s*[:\-]?\s*"
+                    rf"(.+?\b[A-Z]{{3}}\b)"
+                )
+
+                match = re.search(
+                    pattern,
+                    text,
+                    re.I,
+                )
+
+                if not match:
+                    continue
+
+                value = clean_uefa_value(
+                    match.group(1)
+                )
+
+                if value:
+                    result[role] = value
+
+                    print(
+                        f"[UEFA] {role} fallback: "
+                        f"{value}"
+                    )
+
+                    break
+
+    return result
+
+
+def extract_roles(
+    soup: BeautifulSoup,
+    uefa: bool = False,
+) -> dict:
+
+    if uefa:
+        return extract_uefa_roles(soup)
+
+    return extract_roles_italy(soup)
+
+
+# ============================================================
+# TITOLO UEFA
+# ============================================================
+
+def uefa_match_title(url: str) -> str:
+    """
+    Per UEFA non utilizziamo il <title> della pagina.
+
+    L'URL della partita contiene:
+    juventus-vs-n-e-c
+
+    e viene trasformato direttamente in:
+    Juventus - N.E.C.
+    """
+
+    match = re.search(
+        r"/match/\d+--([^/]+)/",
+        url,
+        re.I,
+    )
+
+    if not match:
+        return "Juventus"
+
+    slug = match.group(1)
+
+    teams = re.split(
+        r"-(?:vs|v)-",
+        slug,
+        flags=re.I,
+    )
+
+    if len(teams) != 2:
+        return "Juventus"
+
+    def format_team(value: str) -> str:
+
+        value = value.replace(
+            "-",
+            " ",
+        )
+
+        if value.lower() == "juventus":
+            return "Juventus"
+
+        if value.lower() in {
+            "n e c",
+            "n.e.c.",
+            "nec",
+        }:
+            return "N.E.C."
+
+        return value.title()
+
+    home = format_team(
+        teams[0]
+    )
+
+    away = format_team(
+        teams[1]
+    )
+
+    return f"{home} - {away}"
+
+
+def title_from_soup(
+    soup: BeautifulSoup,
+    url: str = "",
+    uefa: bool = False,
+) -> str:
+
+    if uefa and url:
+        return uefa_match_title(url)
+
+    # Italia: prova gli heading.
     for tag in soup.find_all(
         [
             "h1",
             "h2",
-            "title",
         ]
     ):
 
         value = clean(
             tag.get_text(
+                " ",
+                strip=True,
+            )
+        )
+
+        if (
+            "juventus" in value.lower()
+            and len(value) < 180
+        ):
+            return value
+
+    # Poi il title HTML.
+    if soup.title:
+
+        value = clean(
+            soup.title.get_text(
                 " ",
                 strip=True,
             )
@@ -395,11 +688,11 @@ COUNTRY_FLAGS = {
 # ============================================================
 
 def format_uefa_name(value: str) -> str:
-    value = clean(value)
 
-    # Cerca il codice UEFA alla fine.
+    value = clean_uefa_value(value)
+
     match = re.search(
-        r"\b([A-Z]{3})\s*$",
+        r"\b([A-Z]{3})\b",
         value,
     )
 
@@ -413,12 +706,6 @@ def format_uefa_name(value: str) -> str:
     )
 
     parts = name.split()
-
-    # Nome completo UEFA:
-    # Oleksii Derevinskyi UKR
-    #
-    # Messaggio:
-    # Derevinskyi 🇺🇦
 
     surname = (
         parts[-1]
@@ -435,19 +722,21 @@ def format_uefa_name(value: str) -> str:
 
 
 def format_uefa_assistenti(value: str) -> str:
+    """
+    Gestisce:
+    Nome Cognome UKR Nome Cognome UKR
+
+    restituendo:
+    Cognome 🇺🇦 – Cognome 🇺🇦
+    """
+
     value = clean(value)
 
-    # Esempio UEFA:
-    #
-    # Oleksii Myronov UKR
-    # Dmytro Zaporozhenko UKR
-    #
-    # oppure tutto sulla stessa riga:
-    #
-    # Oleksii Myronov UKR Dmytro Zaporozhenko UKR
-
+    # Cerchiamo blocchi terminanti con un codice paese.
     matches = re.findall(
-        r"(.+?)\s+([A-Z]{3})(?=\s|$)",
+        r"([A-Za-zÀ-ÖØ-öø-ÿ'’-]+"
+        r"(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ'’-]+)*)"
+        r"\s+([A-Z]{3})\b",
         value,
     )
 
@@ -462,11 +751,10 @@ def format_uefa_assistenti(value: str) -> str:
 
         parts = name.split()
 
-        surname = (
-            parts[-1]
-            if parts
-            else name
-        )
+        if not parts:
+            continue
+
+        surname = parts[-1]
 
         flag = COUNTRY_FLAGS.get(
             code,
@@ -564,7 +852,10 @@ def process_url(
 
         return False
 
-    roles = extract_roles(soup)
+    roles = extract_roles(
+        soup,
+        uefa=uefa,
+    )
 
     if not roles:
 
@@ -576,7 +867,9 @@ def process_url(
         return False
 
     title = title_from_soup(
-        soup
+        soup,
+        url=url,
+        uefa=uefa,
     )
 
     message = format_message(
@@ -598,6 +891,8 @@ def process_url(
         history_key
     )
 
+    # Se il messaggio è identico non inviamo
+    # nuovamente la designazione.
     if previous == message:
 
         print(
@@ -606,6 +901,14 @@ def process_url(
         )
 
         return False
+
+    # Se il vecchio storico è sporco/sbagliato,
+    # viene automaticamente sostituito con quello corretto.
+    if previous:
+        print(
+            "[STORICO] Designazione precedente "
+            "diversa: aggiorno il record."
+        )
 
     send_telegram(
         message
@@ -750,10 +1053,7 @@ def main() -> None:
 
     changed = False
 
-    # --------------------------------------------------------
-    # UEFA
-    # --------------------------------------------------------
-
+    # UEFA → Playwright
     try:
 
         if check_uefa(
@@ -767,10 +1067,7 @@ def main() -> None:
             f"[ARBITRI] Errore UEFA: {exc}"
         )
 
-    # --------------------------------------------------------
-    # ITALIA
-    # --------------------------------------------------------
-
+    # Italia → requests
     try:
 
         if check_italy(
@@ -783,10 +1080,6 @@ def main() -> None:
         print(
             f"[ARBITRI] Errore Italia: {exc}"
         )
-
-    # --------------------------------------------------------
-    # SALVATAGGIO STORICO
-    # --------------------------------------------------------
 
     if changed:
 
@@ -808,3 +1101,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+```
