@@ -21,26 +21,12 @@ CHAT_ID = os.getenv("CHAT_ID", "").strip()
 TIMEOUT = 15
 RETRIES = 2
 
-# ── SofaScore ─────────────────────────────────────────────────────────────────
-# it.uefa.com blocca i client non-browser (SPA React + IP cloud in blocklist).
-# SofaScore espone le stesse designazioni tramite API JSON, senza JS.
-
-JUVENTUS_SS = 2687        # ID Juventus su SofaScore
-
-# uniqueTournament IDs su SofaScore
-SOFASCORE_UEFA = {
-    "Champions League":  7,
-    "Europa League":     679,
-    "Conference League": 17,
+UEFA = {
+    "Champions League":  "https://it.uefa.com/uefachampionsleague/clubs/50139--juventus/matches/",
+    "Europa League":     "https://it.uefa.com/uefaeuropaleague/clubs/50139--juventus/matches/",
+    "Conference League": "https://it.uefa.com/uefaeuropaconferenceleague/clubs/50139--juventus/matches/",
 }
 
-SS_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36",
-    "Referer":    "https://www.sofascore.com/",
-    "Accept":     "application/json",
-}
-
-# ── AIA ───────────────────────────────────────────────────────────────────────
 AIA      = "https://www.aia-figc.it/news/?c=9"
 AIA_HOST = "www.aia-figc.it"
 
@@ -71,12 +57,12 @@ def clean(s: str) -> str:
     return re.sub(r"\s+", " ", s or "").strip()
 
 
-def http_get(url: str, headers: dict | None = None) -> requests.Response:
+def http_get(url: str) -> requests.Response:
     last = None
     for attempt in range(1, RETRIES + 1):
         try:
             print(f"[HTTP] {attempt}/{RETRIES} {url}")
-            r = session.get(url, headers=headers, timeout=TIMEOUT)
+            r = session.get(url, timeout=TIMEOUT)
             r.raise_for_status()
             return r
         except requests.RequestException as exc:
@@ -122,7 +108,7 @@ def send_telegram(text: str) -> None:
         raise RuntimeError(str(r.json()))
 
 
-# ── parsing AIA ───────────────────────────────────────────────────────────────
+# ── parsing ───────────────────────────────────────────────────────────────────
 
 def parse_date(text: str) -> str | None:
     m = re.search(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b", text)
@@ -187,94 +173,132 @@ def format_message(prefix: str, title: str, roles: dict) -> str:
     return "\n".join(lines)
 
 
-# ── UEFA via SofaScore ────────────────────────────────────────────────────────
-
-def ss_get(path: str) -> dict:
-    url = f"https://api.sofascore.com/api/v1{path}"
-    return http_get(url, headers=SS_HEADERS).json()
+def match_id(url: str) -> str | None:
+    m = re.search(r"/match/(\d+)", url)
+    return m.group(1) if m else None
 
 
-def ss_roles(event: dict) -> dict:
-    """Estrae arbitro e assistenti dall'evento SofaScore."""
-    roles: dict[str, str] = {}
-
-    # arbitro principale
-    ref = event.get("referee")
-    if ref:
-        name = ref.get("name", "")
-        country = ref.get("country", {}).get("name", "")
-        roles["ARBITRO"] = f"{name} ({country})" if country else name
-
-    return roles
-
+# ── UEFA via Playwright ───────────────────────────────────────────────────────
 
 def check_uefa(state: dict) -> bool:
-    # mappa inversa: sofascore uniqueTournament id → nome competizione
-    id_to_comp = {v: k for k, v in SOFASCORE_UEFA.items()}
-
     try:
-        data = ss_get(f"/team/{JUVENTUS_SS}/events/next/0")
-    except Exception as exc:
-        print(f"[UEFA] SofaScore upcoming: {exc}")
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        print("[UEFA] playwright non installato")
         return False
 
-    events = data.get("events", [])
-    print(f"[UEFA] SofaScore: {len(events)} prossime partite totali")
-
     changed = False
-    for event in events:
-        # identifica se è una competizione UEFA
-        ut_id = (
-            event.get("tournament", {})
-                 .get("uniqueTournament", {})
-                 .get("id")
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(
+            headless=True,
+            args=["--disable-dev-shm-usage"],
         )
-        if ut_id not in id_to_comp:
-            continue
-
-        competition = id_to_comp[ut_id]
-        event_id    = event["id"]
-        key         = f"{competition}:{event_id}"
-
-        if key in state["uefa"]:
-            print(f"[SKIP] {key}")
-            continue
-
-        # dettaglio partita per l'arbitro
         try:
-            detail = ss_get(f"/event/{event_id}")
-        except Exception as exc:
-            print(f"[UEFA] event {event_id}: {exc}")
-            continue
+            context = browser.new_context(
+                locale="it-IT",
+                timezone_id="Europe/Rome",
+                user_agent=(
+                    "Mozilla/5.0 (X11; Linux x86_64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/140.0.0.0 Safari/537.36"
+                ),
+            )
+            page = context.new_page()
 
-        ev    = detail.get("event", {})
-        roles = ss_roles(ev)
+            for competition, cal_url in UEFA.items():
+                print(f"[UEFA] {competition}: {cal_url}")
 
-        if not roles.get("ARBITRO"):
-            print(f"[UEFA] {competition} {event_id}: arbitro non ancora designato")
-            continue
+                # ── carica la pagina partite della competizione ────────────
+                try:
+                    page.goto(cal_url, wait_until="domcontentloaded", timeout=60_000)
+                    # aspetta che il JS renderizzi i link delle partite
+                    page.wait_for_selector("a[href*='/match/']", timeout=20_000)
+                except Exception as exc:
+                    print(f"[UEFA] {competition}: pagina non caricata – {exc}")
+                    continue
 
-        home  = ev.get("homeTeam", {}).get("name", "?")
-        away  = ev.get("awayTeam", {}).get("name", "?")
-        title = f"{home} - {away}"
+                # raccoglie tutti i link /match/ visibili nella pagina
+                raw_links: list[str] = page.evaluate(
+                    """() => {
+                        const seen = new Set();
+                        document.querySelectorAll('a[href*="/match/"]').forEach(a => {
+                            seen.add(a.href);
+                        });
+                        return [...seen];
+                    }"""
+                )
 
-        message = format_message("🇪🇺ℹ️", title, roles)
+                # normalizza: deve puntare a /matchinfo/
+                links = []
+                for href in raw_links:
+                    mid = match_id(href)
+                    if not mid:
+                        continue
+                    base = href.split("?")[0].split("#")[0].rstrip("/")
+                    if "/matchinfo" not in base:
+                        base += "/matchinfo/"
+                    else:
+                        base += "/"
+                    links.append(base)
 
-        try:
-            send_telegram(message)
-        except Exception as exc:
-            print(f"[UEFA] Telegram: {exc}")
-            continue
+                # elimina duplicati mantenendo l'ordine
+                seen_urls: set[str] = set()
+                links = [u for u in links if not (u in seen_urls or seen_urls.add(u))]
 
-        state["uefa"][key] = {
-            "competition": competition,
-            "event_id":    event_id,
-            "match":       title,
-            "sent_at":     datetime.now(ROME).isoformat(),
-        }
-        save_state(state)
-        changed = True
-        print(f"[SENT] {key}")
+                print(f"[UEFA] {competition}: {len(links)} partite trovate")
+
+                for url in links:
+                    mid = match_id(url)
+                    if not mid:
+                        continue
+                    key = f"{competition}:{mid}"
+                    if key in state["uefa"]:
+                        print(f"[SKIP] {key}")
+                        continue
+
+                    # ── carica la pagina matchinfo ─────────────────────────
+                    try:
+                        page.goto(url, wait_until="domcontentloaded", timeout=30_000)
+                        page.wait_for_timeout(2_000)   # attende rendering JS
+                    except Exception as exc:
+                        print(f"[UEFA] {url}: {exc}")
+                        continue
+
+                    html  = page.content()
+                    soup  = BeautifulSoup(html, "html.parser")
+                    text  = clean(soup.get_text(" ", strip=True))
+
+                    if "juventus" not in text.lower():
+                        continue
+
+                    roles = extract_roles(soup)
+                    if not roles.get("ARBITRO"):
+                        print(f"[UEFA] {key}: arbitro non ancora designato")
+                        continue
+
+                    title   = title_from_soup(soup)
+                    message = format_message("🇪🇺ℹ️", title, roles)
+
+                    try:
+                        send_telegram(message)
+                    except Exception as exc:
+                        print(f"[UEFA] Telegram: {exc}")
+                        continue
+
+                    state["uefa"][key] = {
+                        "competition": competition,
+                        "match_id":    mid,
+                        "match":       title,
+                        "url":         url,
+                        "sent_at":     datetime.now(ROME).isoformat(),
+                    }
+                    save_state(state)
+                    changed = True
+                    print(f"[SENT] {key}")
+
+        finally:
+            browser.close()
 
     return changed
 
@@ -282,7 +306,6 @@ def check_uefa(state: dict) -> bool:
 # ── AIA Italia ────────────────────────────────────────────────────────────────
 
 def article_links(soup: BeautifulSoup) -> list[str]:
-    """Solo link che sembrano articoli Juventus su aia-figc.it."""
     seen:   set[str]  = set()
     result: list[str] = []
 
@@ -297,20 +320,19 @@ def article_links(soup: BeautifulSoup) -> list[str]:
         if parsed.netloc != AIA_HOST:
             continue
         if parsed.query:
-            continue  # esclude ?c=9 e simili
+            continue
 
         segments = [s for s in parsed.path.rstrip("/").split("/") if s]
         if len(segments) < 2:
-            continue  # esclude /news/ e pagine di primo livello
+            continue
 
         anchor = clean(a.get_text(" ", strip=True))
         if not anchor:
             continue
 
-        # pre-filtro: segui solo articoli che già menzionano Juventus
-        if "juventus" not in anchor.lower() and "juventus" not in href.lower():
-            if "juve" not in anchor.lower():
-                continue
+        needle = anchor.lower() + href.lower()
+        if "juventus" not in needle and "juve" not in needle:
+            continue
 
         if full not in seen:
             seen.add(full)
