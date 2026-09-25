@@ -183,11 +183,56 @@ def extract_roles(soup):
 
 
 def title_from_soup(soup):
-    for tag in soup.find_all(["h1", "h2", "title"]):
+    # Priorità a h1/h2 (es. "Juventus vs N.E.C."), che sono più puliti
+    # del tag <title> della pagina (che include "| Info partita | UEFA
+    # Europa League 2026/27 | UEFA.com" e rovinava l'hashtag).
+    for tag in soup.find_all(["h1", "h2"]):
         value = clean(tag.get_text(" ", strip=True))
         if "juventus" in value.lower() and len(value) < 180:
             return value
+
+    title_tag = soup.find("title")
+    if title_tag:
+        value = clean(title_tag.get_text(" ", strip=True)).split("|")[0].strip()
+        if "juventus" in value.lower() and len(value) < 180:
+            return value
+
     return "Juventus"
+
+
+COUNTRY_FLAGS = {
+    "ALB": "🇦🇱", "AND": "🇦🇩", "ARM": "🇦🇲", "AUT": "🇦🇹", "AZE": "🇦🇿",
+    "BEL": "🇧🇪", "BIH": "🇧🇦", "BLR": "🇧🇾", "BUL": "🇧🇬", "CRO": "🇭🇷",
+    "CYP": "🇨🇾", "CZE": "🇨🇿", "DEN": "🇩🇰", "ESP": "🇪🇸", "EST": "🇪🇪",
+    "FIN": "🇫🇮", "FRA": "🇫🇷", "GEO": "🇬🇪", "GER": "🇩🇪", "GIB": "🇬🇮",
+    "GRE": "🇬🇷", "HUN": "🇭🇺", "IRL": "🇮🇪", "ISL": "🇮🇸", "ISR": "🇮🇱",
+    "ITA": "🇮🇹", "KAZ": "🇰🇿", "KOS": "🇽🇰", "LAT": "🇱🇻", "LIE": "🇱🇮",
+    "LTU": "🇱🇹", "LUX": "🇱🇺", "MDA": "🇲🇩", "MKD": "🇲🇰", "MLT": "🇲🇹",
+    "MNE": "🇲🇪", "NED": "🇳🇱", "NOR": "🇳🇴", "POL": "🇵🇱", "POR": "🇵🇹",
+    "ROU": "🇷🇴", "RUS": "🇷🇺", "SMR": "🇸🇲", "SRB": "🇷🇸", "SUI": "🇨🇭",
+    "SVK": "🇸🇰", "SVN": "🇸🇮", "SWE": "🇸🇪", "TUR": "🇹🇷", "UKR": "🇺🇦",
+    # Nazionali del Regno Unito, che nel calcio hanno codici propri
+    # (non ISO) e bandiere Unicode "tag sequence" dedicate:
+    "ENG": "🏴󠁧󠁢󠁥󠁮󠁧󠁿", "SCO": "🏴󠁧󠁢󠁳󠁣󠁴󠁿", "WAL": "🏴󠁧󠁢󠁷󠁬󠁳󠁿", "NIR": "🇬🇧",
+}
+
+
+def split_officials(text):
+    # Nei ruoli con più persone (es. ASSISTENTI) il testo estratto è
+    # "Nome Cognome COD Nome Cognome COD" senza separatore: inseriamo un
+    # trattino tra un codice nazione e il nome successivo.
+    return re.sub(r"([A-Z]{3})\s+(?=[A-Z][a-z])", r"\1 - ", text or "")
+
+
+def add_flags(text):
+    def repl(m):
+        code = m.group(0)
+        flag = COUNTRY_FLAGS.get(code)
+        # Se conosciamo la bandiera, sostituiamo il codice (es. "UKR")
+        # con la sola emoji; se non la conosciamo, lasciamo il codice
+        # testuale così l'informazione non si perde.
+        return flag if flag else code
+    return re.sub(r"\b[A-Z]{3}\b", repl, text or "")
 
 
 def hashtag(title):
@@ -200,7 +245,7 @@ def format_message(prefix, title, roles):
     lines = [f"{prefix} Designazione arbitrale di #{hashtag(title)}:", ""]
     for role in ("ARBITRO", "ASSISTENTI", "IV", "VAR", "AVAR"):
         if roles.get(role):
-            lines.append(f"{role}: {roles[role]}")
+            lines.append(f"{role}: {add_flags(split_officials(roles[role]))}")
     return "\n".join(lines)
 
 
