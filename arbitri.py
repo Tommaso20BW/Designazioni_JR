@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
 
 ROME = ZoneInfo("Europe/Rome")
 BASE_DIR = Path(__file__).resolve().parent
@@ -34,6 +35,15 @@ session.headers.update({
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36",
     "Accept-Language": "it-IT,it;q=0.9,en;q=0.8",
 })
+
+# Le pagine it.uefa.com sono dietro un anti-bot (Akamai) che fa scadere in
+# timeout le richieste "requests"-style. Per queste usiamo un browser reale
+# via Playwright; per AIA e Telegram restiamo su requests (nessun problema
+# riscontrato lì).
+PLAYWRIGHT_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
 
 # Etichette allineate a quelle realmente usate da it.uefa.com
 # (Quarto uomo, non "quarto ufficiale"; VAR/AVAR con dicitura completa;
@@ -66,6 +76,23 @@ def request(url):
             if attempt < RETRIES:
                 time.sleep(attempt * 4)
     raise RuntimeError(f"richiesta fallita: {url} -> {last}")
+
+
+def render_url(page, url):
+    """Carica url con un browser reale (Playwright) e ritorna l'HTML renderizzato.
+    Serve per it.uefa.com, che con 'requests' va spesso in timeout (anti-bot)."""
+    last = None
+    for attempt in range(1, RETRIES + 1):
+        try:
+            print(f"[PLAYWRIGHT] {attempt}/{RETRIES} {url}")
+            page.goto(url, wait_until="networkidle", timeout=TIMEOUT * 1000)
+            return page.content()
+        except Exception as exc:
+            last = exc
+            print(f"[PLAYWRIGHT] errore: {exc}")
+            if attempt < RETRIES:
+                time.sleep(attempt * 4)
+    raise RuntimeError(f"richiesta fallita (playwright): {url} -> {last}")
 
 
 def load_state():
@@ -179,61 +206,77 @@ def format_message(prefix, title, roles):
 
 def check_uefa(state):
     changed = False
-    for competition, calendar in UEFA.items():
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent=PLAYWRIGHT_UA,
+            locale="it-IT",
+            viewport={"width": 1280, "height": 900},
+        )
+        page = context.new_page()
+
         try:
-            soup = BeautifulSoup(request(calendar).text, "html.parser")
-        except Exception as exc:
-            print(f"[UEFA] {competition}: {exc}")
-            continue
+            for competition, calendar in UEFA.items():
+                try:
+                    html = render_url(page, calendar)
+                    soup = BeautifulSoup(html, "html.parser")
+                except Exception as exc:
+                    print(f"[UEFA] {competition}: {exc}")
+                    continue
 
-        links = find_match_links(soup)
-        print(f"[UEFA] {competition}: {len(links)} partite trovate")
+                links = find_match_links(soup)
+                print(f"[UEFA] {competition}: {len(links)} partite trovate")
 
-        for url in links:
-            mid = match_id(url)
-            if not mid:
-                continue
-            key = f"{competition}:{mid}"
-            if key in state["uefa"]:
-                print(f"[SKIP] {key}")
-                continue
+                for url in links:
+                    mid = match_id(url)
+                    if not mid:
+                        continue
+                    key = f"{competition}:{mid}"
+                    if key in state["uefa"]:
+                        print(f"[SKIP] {key}")
+                        continue
 
-            try:
-                page = BeautifulSoup(request(url).text, "html.parser")
-            except Exception as exc:
-                print(f"[UEFA] match {mid}: {exc}")
-                continue
+                    try:
+                        match_html = render_url(page, url)
+                        match_page = BeautifulSoup(match_html, "html.parser")
+                    except Exception as exc:
+                        print(f"[UEFA] match {mid}: {exc}")
+                        continue
 
-            text = clean(page.get_text(" ", strip=True))
-            if "juventus" not in text.lower():
-                continue
+                    text = clean(match_page.get_text(" ", strip=True))
+                    if "juventus" not in text.lower():
+                        continue
 
-            roles = extract_roles(page)
-            if not roles.get("ARBITRO"):
-                continue
+                    roles = extract_roles(match_page)
+                    if not roles.get("ARBITRO"):
+                        continue
 
-            mancanti = [r for r in ("ASSISTENTI", "IV", "VAR", "AVAR") if not roles.get(r)]
-            if mancanti:
-                print(f"[UEFA] Designazione incompleta, mancanti: {', '.join(mancanti)}")
+                    mancanti = [r for r in ("ASSISTENTI", "IV", "VAR", "AVAR") if not roles.get(r)]
+                    if mancanti:
+                        print(f"[UEFA] Designazione incompleta, mancanti: {', '.join(mancanti)}")
 
-            title = title_from_soup(page)
-            message = format_message("🇪🇺ℹ️", title, roles)
-            try:
-                send_telegram(message)
-            except Exception as exc:
-                print(f"[UEFA] Telegram: {exc}")
-                continue
+                    title = title_from_soup(match_page)
+                    message = format_message("🇪🇺ℹ️", title, roles)
+                    try:
+                        send_telegram(message)
+                    except Exception as exc:
+                        print(f"[UEFA] Telegram: {exc}")
+                        continue
 
-            state["uefa"][key] = {
-                "competition": competition,
-                "match_id": mid,
-                "match": title,
-                "url": url,
-                "sent_at": datetime.now(ROME).isoformat(),
-            }
-            save_state(state)
-            changed = True
-            print(f"[SENT] {key}")
+                    state["uefa"][key] = {
+                        "competition": competition,
+                        "match_id": mid,
+                        "match": title,
+                        "url": url,
+                        "sent_at": datetime.now(ROME).isoformat(),
+                    }
+                    save_state(state)
+                    changed = True
+                    print(f"[SENT] {key}")
+        finally:
+            browser.close()
+
     return changed
 
 
