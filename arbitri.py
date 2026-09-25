@@ -66,13 +66,12 @@ def request(url):
     last = None
     for attempt in range(1, RETRIES + 1):
         try:
-            print(f"[HTTP] {attempt}/{RETRIES} {url}")
             r = session.get(url, timeout=TIMEOUT)
             r.raise_for_status()
             return r
         except requests.RequestException as exc:
             last = exc
-            print(f"[HTTP] errore: {exc}")
+            print(f"[HTTP] tentativo {attempt}/{RETRIES} fallito ({url}): {exc}")
             if attempt < RETRIES:
                 time.sleep(attempt * 4)
     raise RuntimeError(f"richiesta fallita: {url} -> {last}")
@@ -84,12 +83,11 @@ def render_url(page, url):
     last = None
     for attempt in range(1, RETRIES + 1):
         try:
-            print(f"[PLAYWRIGHT] {attempt}/{RETRIES} {url}")
             page.goto(url, wait_until="networkidle", timeout=TIMEOUT * 1000)
             return page.content()
         except Exception as exc:
             last = exc
-            print(f"[PLAYWRIGHT] errore: {exc}")
+            print(f"[PLAYWRIGHT] tentativo {attempt}/{RETRIES} fallito ({url}): {exc}")
             if attempt < RETRIES:
                 time.sleep(attempt * 4)
     raise RuntimeError(f"richiesta fallita (playwright): {url} -> {last}")
@@ -236,9 +234,18 @@ def add_flags(text):
 
 
 def hashtag(title):
-    title = re.sub(r"\b(?:vs|v)\b", "", title, flags=re.I)
-    title = re.sub(r"[^A-Za-z0-9À-ÖØ-öø-ÿ]", "", title)
-    return title or "Juve"
+    # Vogliamo sempre "Juve" + nome dell'avversario, es. "JuveNec",
+    # "JuveAtalanta" — non l'intero titolo della pagina.
+    parts = [clean(p) for p in re.split(r"\b(?:vs|v|-)\b", title, flags=re.I)]
+    parts = [p for p in parts if p]
+    opponent = next((p for p in parts if "juventus" not in p.lower()), None)
+    if opponent is None:
+        opponent = re.sub(r"juventus", "", title, flags=re.I)
+
+    opponent = re.sub(r"[^A-Za-zÀ-ÖØ-öø-ÿ\s]", "", opponent)
+    words = [w for w in opponent.split() if w]
+    opponent_camel = "".join(w[:1].upper() + w[1:].lower() for w in words)
+    return f"Juve{opponent_camel}" if opponent_camel else "Juve"
 
 
 def format_message(prefix, title, roles):
@@ -267,11 +274,12 @@ def check_uefa(state):
                     html = render_url(page, calendar)
                     soup = BeautifulSoup(html, "html.parser")
                 except Exception as exc:
-                    print(f"[UEFA] {competition}: {exc}")
+                    print(f"[UEFA] {competition}: errore nel calendario -> {exc}")
                     continue
 
                 links = find_match_links(soup)
-                print(f"[UEFA] {competition}: {len(links)} partite trovate")
+                nuove = 0
+                gia_inviate = 0
 
                 for url in links:
                     mid = match_id(url)
@@ -279,14 +287,14 @@ def check_uefa(state):
                         continue
                     key = f"{competition}:{mid}"
                     if key in state["uefa"]:
-                        print(f"[SKIP] {key}")
+                        gia_inviate += 1
                         continue
 
                     try:
                         match_html = render_url(page, url)
                         match_page = BeautifulSoup(match_html, "html.parser")
                     except Exception as exc:
-                        print(f"[UEFA] match {mid}: {exc}")
+                        print(f"[UEFA] {competition}, match {mid}: errore -> {exc}")
                         continue
 
                     text = clean(match_page.get_text(" ", strip=True))
@@ -297,16 +305,16 @@ def check_uefa(state):
                     if not roles.get("ARBITRO"):
                         continue
 
+                    title = title_from_soup(match_page)
                     mancanti = [r for r in ("ASSISTENTI", "IV", "VAR", "AVAR") if not roles.get(r)]
                     if mancanti:
-                        print(f"[UEFA] Designazione incompleta, mancanti: {', '.join(mancanti)}")
+                        print(f"[UEFA] {title}: designazione incompleta (mancano {', '.join(mancanti)})")
 
-                    title = title_from_soup(match_page)
                     message = format_message("🇪🇺ℹ️", title, roles)
                     try:
                         send_telegram(message)
                     except Exception as exc:
-                        print(f"[UEFA] Telegram: {exc}")
+                        print(f"[UEFA] {title}: invio Telegram fallito -> {exc}")
                         continue
 
                     state["uefa"][key] = {
@@ -318,7 +326,10 @@ def check_uefa(state):
                     }
                     save_state(state)
                     changed = True
-                    print(f"[SENT] {key}")
+                    nuove += 1
+                    print(f"[UEFA] ✅ inviata: {title} ({competition})")
+
+                print(f"[UEFA] {competition}: {len(links)} partite, {gia_inviate} già inviate, {nuove} nuove")
         finally:
             browser.close()
 
@@ -353,11 +364,15 @@ def check_italia(state):
     try:
         index = BeautifulSoup(request(AIA).text, "html.parser")
     except Exception as exc:
-        print(f"[ITALIA] AIA: {exc}")
+        print(f"[ITALIA] errore nell'indice AIA -> {exc}")
         return False
 
     changed = False
-    for url in article_links(index):
+    nuove = 0
+    gia_inviate = 0
+    articoli = article_links(index)
+
+    for url in articoli:
         try:
             soup = BeautifulSoup(request(url).text, "html.parser")
         except Exception:
@@ -373,7 +388,7 @@ def check_italia(state):
 
         key = f"{today}:{url}"
         if key in state["italia"]:
-            print(f"[SKIP] {key}")
+            gia_inviate += 1
             continue
 
         title = title_from_soup(soup)
@@ -381,7 +396,7 @@ def check_italia(state):
         try:
             send_telegram(message)
         except Exception as exc:
-            print(f"[ITALIA] Telegram: {exc}")
+            print(f"[ITALIA] {title}: invio Telegram fallito -> {exc}")
             continue
 
         state["italia"][key] = {
@@ -392,7 +407,10 @@ def check_italia(state):
         }
         save_state(state)
         changed = True
-        print(f"[SENT] {key}")
+        nuove += 1
+        print(f"[ITALIA] ✅ inviata: {title}")
+
+    print(f"[ITALIA] {len(articoli)} articoli controllati, {gia_inviate} già inviate, {nuove} nuove")
     return changed
 
 
