@@ -1,4 +1,4 @@
-name: Controlla designazioni arbitrali
+name: Controlla Designazioni
 
 on:
   workflow_dispatch:
