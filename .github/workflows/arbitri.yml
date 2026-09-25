@@ -5,6 +5,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: arbitri-jr
@@ -24,6 +25,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Cache Playwright
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
 
       - name: Installa dipendenze
         run: pip install -r requirements.txt
@@ -50,3 +59,42 @@ jobs:
           git add data/designazioni.json
           git commit -m "Aggiorna storico designazioni"
           git push
+
+      - name: Elimina vecchi run
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runs = await github.paginate(
+              github.rest.actions.listWorkflowRunsForRepo,
+              {
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                per_page: 100
+              }
+            );
+
+            const currentRunId = context.runId;
+
+            const oldRuns = runs.filter(
+              run =>
+                run.id !== currentRunId &&
+                run.workflow_id === context.workflow.workflow_id
+            );
+
+            console.log(`Run da eliminare: ${oldRuns.length}`);
+
+            for (const run of oldRuns) {
+              try {
+                await github.rest.actions.deleteWorkflowRun({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  run_id: run.id
+                });
+
+                console.log(`Eliminato run ${run.id}`);
+              } catch (error) {
+                console.log(
+                  `Impossibile eliminare run ${run.id}: ${error.message}`
+                );
+              }
+            }
