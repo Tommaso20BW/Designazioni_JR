@@ -15,7 +15,7 @@ jobs:
   controlla:
     name: Controlla designazioni
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
 
     steps:
       - name: Scarica il repository
@@ -92,3 +92,19 @@ jobs:
           done
 
           echo "Pulizia completata."
+
+      - name: Attendi 10 minuti e avvia il nuovo run
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REF: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Attendo 10 minuti prima di avviare il nuovo run..."
+          sleep 600
+
+          echo "Avvio un nuovo run di Controlla Designazioni..."
+          gh workflow run arbitri.yml --ref "$TARGET_REF"
+          echo "Nuovo run avviato."
