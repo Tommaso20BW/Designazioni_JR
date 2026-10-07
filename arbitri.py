@@ -73,9 +73,8 @@ def request(url):
             return r
         except requests.RequestException as exc:
             last = exc
-            print(f"[HTTP] tentativo {attempt}/{RETRIES} fallito ({url}): {exc}")
             if attempt < RETRIES:
-                time.sleep(attempt * 4)
+                time.sleep(attempt * 2)
     raise RuntimeError(f"richiesta fallita: {url} -> {last}")
 
 
@@ -686,43 +685,31 @@ def check_uefa(state):
 # ITALIA - CONTROLLO CORRETTO
 # =========================
 def parse_date(text):
+    """Compatibilità con eventuali vecchi richiami; non serve per decidere cosa inviare."""
     months = {
         "gennaio": 1, "febbraio": 2, "marzo": 3, "aprile": 4,
         "maggio": 5, "giugno": 6, "luglio": 7, "agosto": 8,
         "settembre": 9, "ottobre": 10, "novembre": 11, "dicembre": 12,
     }
     value = clean(text).replace("\ufeff", "")
-
     m = re.search(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b", value)
     if m:
         return f"{int(m.group(3)):04d}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
-
     m = re.search(r"\b(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})\b", value, re.I)
     if m and m.group(2).lower() in months:
         return f"{m.group(3)}-{months[m.group(2).lower()]:02d}-{int(m.group(1)):02d}"
     return None
 
 
-def article_publication_date(soup):
-    """Trova la data di pubblicazione vicino al titolo dell'articolo, non nelle gare."""
-    lines = article_text_lines(soup)
-    for line in lines[:12]:
-        value = parse_date(line)
-        if value:
-            return value
-    return None
-
-
 def article_links(soup):
-    """Estrae esclusivamente le designazioni Serie A ENILIVE, escludendo le variazioni."""
+    """Estrae le sole pagine di designazione Serie A ENILIVE."""
     result = []
     seen = set()
 
     for a in soup.find_all("a", href=True):
         label = clean(a.get_text(" ", strip=True)).replace("\ufeff", "")
-        href = urljoin(AIA, a["href"])
+        href = urljoin(AIA, a["href"]).split("#", 1)[0]
         lower = href.lower()
-        upper_label = label.upper()
 
         if "/news/" not in lower:
             continue
@@ -730,15 +717,11 @@ def article_links(soup):
             continue
         if "designazioni" not in lower:
             continue
-        if "variazione" in lower or "VARIAZIONE" in upper_label:
+        if "variazione" in lower or "variazione" in label.lower():
             continue
-
-        # Se il testo del link è disponibile, richiediamo esplicitamente la
-        # stringa SERIE A ENILIVE - DESIGNAZIONI.
         if label and not _looks_like_italia_designation_title(label):
             continue
 
-        href = href.split("#", 1)[0]
         if href not in seen:
             result.append(href)
             seen.add(href)
@@ -746,15 +729,8 @@ def article_links(soup):
     return result
 
 
-def aia_category_urls():
-    """Genera le pagine dell'archivio Designazioni AIA senza usare il campo ricerca."""
-    yield AIA
-    for page_number in range(1, AIA_CATEGORY_PAGES):
-        yield f"{AIA}&p={page_number}"
-
-
 def _italia_state_has_url(state, url):
-    """Compatibile con il vecchio stato (chiavi data:url) e con il nuovo (url)."""
+    """Compatibile con vecchi e nuovi formati del file di stato."""
     bucket = state.setdefault("italia", {})
     if url in bucket:
         return True
@@ -762,89 +738,72 @@ def _italia_state_has_url(state, url):
     return any(key.endswith(suffix) for key in bucket)
 
 
+def _article_id(url):
+    """ID numerico finale dell'articolo AIA, usato per scegliere il più recente."""
+    m = re.search(r"-(\d+)/?$", url)
+    return int(m.group(1)) if m else -1
+
+
 def check_italia(state):
-    today = datetime.now(ROME).date()
-    changed = False
-    nuove = 0
+    """Controlla l'ultima designazione Serie A AIA con log compatto, come UEFA."""
+    articoli = 0
     gia_inviate = 0
-    controllati = 0
+    nuove = 0
 
-    # La ricerca AIA ?cerca=... restituisce HTTP 400: non viene più chiamata.
-    # Usiamo direttamente l'archivio categoria e le sue pagine.
-    articoli = []
-    seen_urls = set()
+    try:
+        response = request(AIA)
+        index = BeautifulSoup(response.content, "html.parser")
+    except Exception:
+        print("[ITALIA] Serie A: errore nel calendario")
+        return False
 
-    for index_url in aia_category_urls():
-        try:
-            index_response = request(index_url)
-            index = BeautifulSoup(index_response.content, "html.parser")
-            links = article_links(index)
-            for url in links:
-                if url not in seen_urls:
-                    articoli.append(url)
-                    seen_urls.add(url)
-        except Exception as exc:
-            print(f"[ITALIA] errore indice AIA {index_url} -> {exc}")
+    links = article_links(index)
+    if not links:
+        print("[ITALIA] Serie A: 0 articoli, 0 già inviati, 0 nuove")
+        return False
 
-    for url in articoli:
-        controllati += 1
+    articoli = 1
+    ultimo = max(links, key=_article_id)
 
-        if _italia_state_has_url(state, url):
-            gia_inviate += 1
-            continue
+    if _italia_state_has_url(state, ultimo):
+        gia_inviate = 1
+        print(f"[ITALIA] Serie A: 1 articolo, {gia_inviate} già inviato, 0 nuove")
+        return False
 
-        try:
-            response = request(url)
-            soup = BeautifulSoup(response.content, "html.parser")
-        except Exception as exc:
-            print(f"[ITALIA] errore pagina {url} -> {exc}")
-            continue
+    try:
+        response = request(ultimo)
+        soup = BeautifulSoup(response.content, "html.parser")
+    except Exception:
+        print("[ITALIA] Serie A: errore nella designazione")
+        print(f"[ITALIA] Serie A: {articoli} articolo, 0 già inviati, 0 nuove")
+        return False
 
-        publication_date = article_publication_date(soup)
-        if publication_date:
-            try:
-                pub_day = datetime.strptime(publication_date, "%Y-%m-%d").date()
-            except ValueError:
-                pub_day = None
-            if pub_day is not None:
-                age_days = (today - pub_day).days
-                if age_days > ITALIA_LOOKBACK_DAYS:
-                    continue
-                if age_days < -2:
-                    # Protezione contro date anomale future provenienti da un parsing errato.
-                    continue
-        else:
-            print(f"[ITALIA] data pubblicazione non trovata -> {url}")
-            continue
+    title, roles = extract_italia_assignment(soup)
+    if not title or not roles.get("ARBITRO"):
+        print(f"[ITALIA] Serie A: {articoli} articolo, 0 già inviati, 0 nuove")
+        return False
 
-        title, roles = extract_italia_assignment(soup)
-        if not title or not roles.get("ARBITRO"):
-            continue
+    message, entities = format_message_italia(title, roles)
 
-        message, entities = format_message_italia(title, roles)
+    try:
+        send_telegram(message, entities)
+    except Exception:
+        print("[ITALIA] Serie A: invio Telegram fallito")
+        print(f"[ITALIA] Serie A: {articoli} articolo, 0 già inviati, 0 nuove")
+        return False
 
-        try:
-            send_telegram(message, entities)
-        except Exception as exc:
-            print(f"[ITALIA] {title}: invio Telegram fallito -> {exc}")
-            continue
+    state["italia"][ultimo] = {
+        "date": datetime.now(ROME).date().isoformat(),
+        "match": title,
+        "url": ultimo,
+        "sent_at": datetime.now(ROME).isoformat(),
+    }
+    save_state(state)
+    nuove = 1
 
-        # La URL è l'identificativo stabile dell'articolo: evita il problema
-        # del vecchio formato data:url quando il workflow viene eseguito in un
-        # giorno diverso dalla pubblicazione.
-        state["italia"][url] = {
-            "date": publication_date,
-            "match": title,
-            "url": url,
-            "sent_at": datetime.now(ROME).isoformat(),
-        }
-        save_state(state)
-        changed = True
-        nuove += 1
-        print(f"[ITALIA] ✅ inviata: {title}")
-
-    print(f"[ITALIA] {controllati} articoli controllati, {gia_inviate} già inviate, {nuove} nuove")
-    return changed
+    print(f"[ITALIA] ✅ inviata: {title}")
+    print(f"[ITALIA] Serie A: {articoli} articolo, 0 già inviati, {nuove} nuova")
+    return True
 
 
 def main():
