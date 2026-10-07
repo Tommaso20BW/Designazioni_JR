@@ -490,6 +490,33 @@ def _read_aia_role(lines, start, role):
     return start, ""
 
 
+def _looks_like_aia_schedule_line(line: str) -> bool:
+    """Riconosce la riga con giorno/data/orario che segue la gara."""
+    value = clean(line)
+    return bool(re.search(
+        r"(?:Lunedì|Martedì|Mercoledì|Giovedì|Venerdì|Sabato|Domenica)\s+\d{1,2}/\d{1,2}\s+[Hh]\.?\s*\d{1,2}[.:]\d{2}",
+        value,
+        re.I,
+    ))
+
+
+def _next_aia_person(lines, start, limit=10):
+    """Trova il primo nominativo dopo la gara, ignorando data/orario e '(foto)'."""
+    end = min(len(lines), start + limit)
+    for i in range(start, end):
+        value = clean(lines[i])
+        if not value:
+            continue
+        if _looks_like_aia_schedule_line(value):
+            continue
+        if value.lower() == "(foto)":
+            continue
+        if re.match(r"^(IV|VAR|AVAR)\s*:", value, re.I):
+            continue
+        return i, value
+    return None, ""
+
+
 def extract_italia_assignment(soup):
     """Estrae il solo blocco della gara della Juventus dalla pagina AIA."""
     lines = article_text_lines(soup)
@@ -515,22 +542,14 @@ def extract_italia_assignment(soup):
         if "juventus" not in {home.lower(), away.lower()}:
             continue
 
-        # La struttura AIA è posizionale:
-        # gara / arbitro / assistenti / IV / VAR / AVAR.
-        referee_idx, referee = _next_nonempty(lines, idx + 1, limit=6)
+        # AIA: gara -> giorno/data/orario -> arbitro -> assistenti -> IV/VAR/AVAR.
+        # La riga di giorno/data/orario NON è il nome dell'arbitro: va saltata.
+        referee_idx, referee = _next_aia_person(lines, idx + 1, limit=8)
         if referee_idx is None or not referee:
             continue
 
-        # '(foto)' può comparire attaccato o come nodo separato.
-        if referee.lower() == "(foto)":
-            referee_idx, referee = _next_nonempty(lines, referee_idx + 1, limit=4)
-            if referee_idx is None or not referee:
-                continue
-
-        assistants_idx, assistants = _next_nonempty(lines, referee_idx + 1, limit=6)
+        assistants_idx, assistants = _next_aia_person(lines, referee_idx + 1, limit=8)
         if assistants_idx is None or not assistants:
-            continue
-        if re.match(r"^(IV|VAR|AVAR)\s*:", assistants, re.I):
             continue
 
         role_pos = assistants_idx + 1
@@ -555,7 +574,6 @@ def extract_italia_assignment(soup):
             "AVAR": normalize_official_name(avar),
         }
 
-        # Team names puliti: niente giorno/data/orario.
         title = f"{normalize_team_name(home)} – {normalize_team_name(away)}"
         return title, roles
 
