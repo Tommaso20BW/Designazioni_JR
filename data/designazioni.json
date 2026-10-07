@@ -8,5 +8,12 @@
       "sent_at": "2026-09-25T14:43:45.011393+02:00"
     }
   },
-  "italia": {}
+  "italia": {
+    "2026-10-07:https://www.aia-figc.it/news/serie-a-enilive-designazioni-6a-giornata-28755/": {
+      "date": "2026-10-07",
+      "match": "Juventus",
+      "url": "https://www.aia-figc.it/news/serie-a-enilive-designazioni-6a-giornata-28755/",
+      "sent_at": "2026-10-07T12:07:51.691738+02:00"
+    }
+  }
 }
