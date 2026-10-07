@@ -5,7 +5,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import quote_plus, urljoin
 from zoneinfo import ZoneInfo
 
 import requests
@@ -18,16 +18,21 @@ STATE_FILE = BASE_DIR / "data" / "designazioni.json"
 
 TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 CHAT_ID = os.getenv("CHAT_ID", "").strip()
-
 TIMEOUT = 30
 RETRIES = 4
 
+# =========================
+# UEFA - LOGICA ORIGINALE
+# =========================
 UEFA = {
     "Champions League": "https://it.uefa.com/uefachampionsleague/clubs/50139/matches/",
     "Europa League": "https://it.uefa.com/uefaeuropaleague/clubs/50139--juventus/matches/",
     "Conference League": "https://it.uefa.com/uefaeuropaconferenceleague/clubs/50139--juventus/matches/",
 }
 
+# =========================
+# AIA / ITALIA
+# =========================
 AIA = "https://www.aia-figc.it/news/?c=9"
 
 session = requests.Session()
@@ -38,17 +43,14 @@ session.headers.update({
 
 # Le pagine it.uefa.com sono dietro un anti-bot (Akamai) che fa scadere in
 # timeout le richieste "requests"-style. Per queste usiamo un browser reale
-# via Playwright; per AIA e Telegram restiamo su requests (nessun problema
-# riscontrato lì).
+# via Playwright; per AIA e Telegram restiamo su requests.
 PLAYWRIGHT_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
 
-# Etichette allineate a quelle realmente usate da it.uefa.com
-# (Quarto uomo, non "quarto ufficiale"; VAR/AVAR con dicitura completa;
-# AVAR PRIMA di VAR perché "Video Assistant Referee" è una sottostringa
-# di "Assistente Video Assistant Referee")
+# Etichette allineate a quelle realmente usate da it.uefa.com.
+# QUESTA PARTE RESTA DEDICATA A UEFA.
 ROLE_PATTERNS = [
     ("ARBITRO", "arbitro"),
     ("ASSISTENTI", "assistenti arbitrali"),
@@ -127,6 +129,9 @@ def send_telegram(text, entities=None):
         raise RuntimeError(str(r.json()))
 
 
+# =========================
+# UEFA - FUNZIONI ORIGINALI
+# =========================
 def match_id(url):
     m = re.search(r"/match/(\d+)", url)
     return m.group(1) if m else None
@@ -149,25 +154,18 @@ def find_match_links(soup):
 
 
 def extract_roles(soup):
-    # IMPORTANTE: rimuovere script/style prima di estrarre il testo.
-    # Senza questo, il testo di eventuali blob JSON incorporati nella
-    # pagina (Next.js/__NEXT_DATA__ ecc.) finisce nel testo estratto e
-    # può generare match spuri (es. "ARBITRO: Referee" invece del nome).
+    # IMPORTANTE: questa è la funzione usata dal percorso UEFA.
+    # Non modificarne il comportamento.
     for tag in soup(["script", "style", "noscript"]):
         tag.decompose()
 
     text = clean(soup.get_text(" ", strip=True))
-
-    # Restringi la ricerca alla sola sezione "Arbitri", tra il titolo
-    # della sezione e quello successivo ("Cartelle stampa partita").
-    # Così eventuale rumore altrove nella pagina (nav, footer, meta)
-    # non può interferire.
     m = re.search(r"\bArbitri\b(.*?)(?:\bCartelle stampa partita\b|$)", text, re.S)
     section = clean(m.group(1)) if m else text
-
     boundary = "|".join(re.escape(alias) for _, alias in ROLE_PATTERNS)
     result = {}
     remaining = section
+
     for role, alias in ROLE_PATTERNS:
         pattern = rf"\b{re.escape(alias)}\b\s*[:\-]?\s*(.+?)(?=\s+(?:{boundary})\b|$)"
         match = re.search(pattern, remaining, re.I)
@@ -175,37 +173,28 @@ def extract_roles(soup):
             value = clean(match.group(1)).strip(":- ")
             if value:
                 result[role] = value
-                # Rimuovi lo span trovato dal testo residuo: evita che,
-                # ad es., il match di VAR "mangi" pezzi già assegnati ad AVAR
-                # (dato che una frase è sottostringa dell'altra).
                 remaining = remaining[: match.start()] + remaining[match.end():]
-
     return result
 
 
 def title_from_soup(soup):
-    # Priorità a h1/h2 (es. "Juventus vs N.E.C."), che sono più puliti
-    # del tag <title> della pagina (che include "| Info partita | UEFA
-    # Europa League 2026/27 | UEFA.com" e rovinava l'hashtag).
+    # Funzione originale UEFA.
     for tag in soup.find_all(["h1", "h2"]):
         value = clean(tag.get_text(" ", strip=True))
         if "juventus" in value.lower() and len(value) < 180:
             return value
-
     title_tag = soup.find("title")
     if title_tag:
         value = clean(title_tag.get_text(" ", strip=True)).split("|")[0].strip()
         if "juventus" in value.lower() and len(value) < 180:
             return value
-
     return "Juventus"
 
 
-# Emoji Unicode (fallback per codici nazione non in COUNTRY_CUSTOM_EMOJI)
+# =========================
+# EMOJI / FORMAT - ORIGINALE UEFA
+# =========================
 COUNTRY_FLAGS: dict[str, str] = {}
-
-# custom_emoji_id per le bandiere UEFA (premium Telegram)
-# Ogni entry: codice 3 lettere → (emoji_unicode_di_base, custom_emoji_id)
 COUNTRY_CUSTOM_EMOJI: dict[str, tuple[str, str]] = {
     "ALB": ("🇦🇱", "5442808872202942144"),
     "AND": ("🇦🇩", "5229127072336589200"),
@@ -214,7 +203,7 @@ COUNTRY_CUSTOM_EMOJI: dict[str, tuple[str, str]] = {
     "AZE": ("🇦🇿", "5224254431939275524"),
     "BEL": ("🇧🇪", "5411564862025244994"),
     "BIH": ("🇧🇦", "5382033281078275575"),
-    "BLR": ("🇧🇾", "5382219601054544127"),
+    "BLR": ("🇧🇾", "5382219600944895243"),
     "BUL": ("🇧🇬", "5408875181705799521"),
     "CRO": ("🇭🇷", "5262677003210860950"),
     "CYP": ("🇨🇾", "5228997115216149309"),
@@ -244,7 +233,7 @@ COUNTRY_CUSTOM_EMOJI: dict[str, tuple[str, str]] = {
     "MLT": ("🇲🇹", "5226954282741283529"),
     "MNE": ("🇲🇪", "5440827745523216914"),
     "NED": ("🇳🇱", "5411124743841524806"),
-    "NOR": ("🇳🇴", "5382300771641470186"),
+    "NOR": ("🇳🇴", "5382300779083549634"),
     "POL": ("🇵🇱", "5291847690940852675"),
     "POR": ("🇵🇹", "5382075788369605892"),
     "ROU": ("🇷🇴", "5411159898148840778"),
@@ -263,13 +252,11 @@ COUNTRY_CUSTOM_EMOJI: dict[str, tuple[str, str]] = {
     "NIR": ("🇬🇧", "5202196682497859879"),
 }
 
-# Prefissi con custom emoji (testo base + custom_emoji_id)
-# Il testo deve contenere esattamente i caratteri Unicode corrispondenti,
-# poi le entità indicano l'offset/length per sovrapporre la custom emoji.
 PREFIX_ITALIA = ("🇮🇹ℹ️", [
     {"offset": 0, "length": 4, "type": "custom_emoji", "custom_emoji_id": "6048880421830136769"},
     {"offset": 4, "length": 2, "type": "custom_emoji", "custom_emoji_id": "5334544901428229844"},
 ])
+
 PREFIX_UEFA = ("🇪🇺ℹ️", [
     {"offset": 0, "length": 4, "type": "custom_emoji", "custom_emoji_id": "6048508615101256052"},
     {"offset": 4, "length": 2, "type": "custom_emoji", "custom_emoji_id": "5334544901428229844"},
@@ -277,31 +264,19 @@ PREFIX_UEFA = ("🇪🇺ℹ️", [
 
 
 def split_officials(text):
-    # Nei ruoli con più persone (es. ASSISTENTI) il testo estratto è
-    # "Nome Cognome COD Nome Cognome COD" senza separatore: inseriamo un
-    # trattino tra un codice nazione e il nome successivo.
     return re.sub(r"([A-Z]{3})\s+(?=[A-Z][a-z])", r"\1 - ", text or "")
 
 
 def _utf16_len(s: str) -> int:
-    """Lunghezza in unità UTF-16 (come conta Telegram gli offset)."""
     return sum(2 if ord(c) > 0xFFFF else 1 for c in s)
 
 
 def add_flags_with_entities(text: str) -> tuple[str, list[dict]]:
-    """Sostituisce i codici nazione a 3 lettere con le emoji bandiera e
-    restituisce (testo_risultante, lista_entità_custom_emoji).
-
-    Le entità hanno offset in unità UTF-16, come richiesto da Telegram.
-    Per le nazioni con custom_emoji_id usiamo quella; per le altre (ENG,
-    SCO, WAL, NIR, ROU…) usiamo l'emoji Unicode standard senza entità.
-    """
     result_chars: list[str] = []
     entities: list[dict] = []
-    offset_utf16 = 0  # cursore in unità UTF-16 sul testo risultante
-
-    # Spezziamo il testo nei token: sequenze [A-Z]{3} vs tutto il resto
+    offset_utf16 = 0
     parts = re.split(r"(\b[A-Z]{3}\b)", text or "")
+
     for part in parts:
         if re.fullmatch(r"[A-Z]{3}", part):
             if part in COUNTRY_CUSTOM_EMOJI:
@@ -320,7 +295,6 @@ def add_flags_with_entities(text: str) -> tuple[str, list[dict]]:
                 result_chars.append(emoji_char)
                 offset_utf16 += _utf16_len(emoji_char)
             else:
-                # Codice sconosciuto: lasciamo il testo così com'è
                 result_chars.append(part)
                 offset_utf16 += _utf16_len(part)
         else:
@@ -331,14 +305,12 @@ def add_flags_with_entities(text: str) -> tuple[str, list[dict]]:
 
 
 def hashtag(title):
-    # Vogliamo sempre "Juve" + nome dell'avversario, es. "JuveNec",
-    # "JuveAtalanta" — non l'intero titolo della pagina.
+    # FUNZIONE ORIGINALE UEFA: invariata.
     parts = [clean(p) for p in re.split(r"\b(?:vs|v|-)\b", title, flags=re.I)]
     parts = [p for p in parts if p]
     opponent = next((p for p in parts if "juventus" not in p.lower()), None)
     if opponent is None:
         opponent = re.sub(r"juventus", "", title, flags=re.I)
-
     opponent = re.sub(r"[^A-Za-zÀ-ÖØ-öø-ÿ\s]", "", opponent)
     words = [w for w in opponent.split() if w]
     opponent_camel = "".join(w[:1].upper() + w[1:].lower() for w in words)
@@ -346,26 +318,12 @@ def hashtag(title):
 
 
 def format_message(prefix_data: tuple, title: str, roles: dict) -> tuple[str, list[dict]]:
-    """Restituisce (testo, entità) pronti per sendMessage con custom emoji.
-
-    prefix_data è una delle costanti PREFIX_ITALIA / PREFIX_UEFA:
-        (stringa_prefix, lista_entità_del_prefix)
-
-    Le entità del prefix hanno offset assoluti a partire da 0 (prima riga).
-    Le entità delle bandiere vengono aggiunte con offset aggiornati tenendo
-    conto del testo che precede la riga di ogni ruolo.
-    """
+    # FUNZIONE ORIGINALE UEFA: invariata.
     prefix_text, prefix_entities = prefix_data
-
-    # Prima riga: "<prefix> Designazione arbitrale di #Hashtag:"
     first_line = f"{prefix_text} Designazione arbitrale di #{hashtag(title)}:"
     lines = [first_line, ""]
-
-    # Calcola offset UTF-16 accumulato fino alla fine delle prime due righe
-    # (prima riga + "\n" + riga vuota + "\n")
     base_offset = _utf16_len(first_line + "\n" + "\n")
-
-    all_entities: list[dict] = list(prefix_entities)  # copia entità prefix
+    all_entities: list[dict] = list(prefix_entities)
 
     for role in ("ARBITRO", "ASSISTENTI", "IV", "VAR", "AVAR"):
         if not roles.get(role):
@@ -374,8 +332,6 @@ def format_message(prefix_data: tuple, title: str, roles: dict) -> tuple[str, li
         flag_text, flag_entities = add_flags_with_entities(split_officials(roles[role]))
         line = label + flag_text
         label_offset = _utf16_len(label)
-        # Aggiusta gli offset delle entità bandiera tenendo conto di:
-        # base_offset (testo già scritto) + label (es. "ARBITRO: ")
         for ent in flag_entities:
             shifted = dict(ent)
             shifted["offset"] = base_offset + label_offset + ent["offset"]
@@ -386,6 +342,199 @@ def format_message(prefix_data: tuple, title: str, roles: dict) -> tuple[str, li
     return "\n".join(lines), all_entities
 
 
+# =========================
+# AIA - NUOVO PARSER ROBUSTO
+# =========================
+TEAM_SEPARATOR_RE = re.compile(r"\s+[–-]\s+")
+DATE_SUFFIX_RE = re.compile(
+    r"\s+(?:(?:Venerdì|Sabato|Domenica|Lunedì|Martedì|Mercoledì|Giovedì)\b.*|\d{1,2}/\d{1,2}\b.*)$",
+    re.I,
+)
+
+
+def soup_text_lines(soup):
+    """Ritorna solo stringhe visibili, preservando i blocchi separati dell'articolo.
+
+    L'estrazione NON usa soup.get_text() sull'intera pagina per trovare la designazione:
+    i dati vengono cercati riga per riga, evitando menu/footer.
+    """
+    for tag in soup(["script", "style", "noscript", "svg"]):
+        tag.decompose()
+
+    lines = []
+    for raw in soup.stripped_strings:
+        value = clean(raw).replace("\ufeff", "")
+        if value:
+            lines.append(value)
+    return lines
+
+
+def normalize_official_name(name: str) -> str:
+    """AIA: nomi con solo la prima lettera maiuscola.
+
+    Esempi:
+      MARCENARO -> Marcenaro
+      ROSSI C. -> Rossi C.
+      LO CICERO -> Lo Cicero
+      FERRIERI CAPUTI -> Ferrieri Caputi
+    """
+    name = clean(name)
+    name = re.sub(r"\s*\(foto\)\s*", "", name, flags=re.I)
+    name = name.strip(" -–—")
+
+    # Mantiene iniziali come C., J.L. e apostrofi, normalizzando il resto.
+    tokens = []
+    for token in name.split():
+        if not token:
+            continue
+        pieces = re.split(r"([\-'’])", token)
+        normalized_pieces = []
+        for piece in pieces:
+            if piece in {"-", "'", "’"}:
+                normalized_pieces.append(piece)
+            elif piece:
+                normalized_pieces.append(piece[:1].upper() + piece[1:].lower())
+        tokens.append("".join(normalized_pieces))
+
+    return " ".join(tokens)
+
+
+def _strip_match_date(line: str) -> str:
+    line = clean(line).replace("\ufeff", "")
+    line = DATE_SUFFIX_RE.sub("", line).strip()
+    return line
+
+
+def extract_italia_assignment(soup):
+    """Estrae esclusivamente il blocco CAGLIARI – JUVENTUS (o altra gara Juve)
+    dalla pagina AIA.
+
+    La struttura AIA 2026/27 è posizionale:
+      gara
+      arbitro
+      assistenti
+      IV: ...
+      VAR: ...
+      AVAR: ...
+
+    Non cerca le etichette "ARBITRO"/"ASSISTENTI" perché sul sito AIA non ci sono.
+    """
+    lines = soup_text_lines(soup)
+
+    for idx, line in enumerate(lines):
+        normalized = line.replace("—", "–")
+        if not re.search(r"\bJUVENTUS\b", normalized, re.I):
+            continue
+        if not TEAM_SEPARATOR_RE.search(normalized):
+            continue
+
+        match_line = clean(normalized)
+        # Evita eventuali voci di menu/contenuti estranei.
+        if len(match_line) > 180:
+            continue
+
+        teams_part = _strip_match_date(match_line)
+        pieces = TEAM_SEPARATOR_RE.split(teams_part, maxsplit=1)
+        if len(pieces) != 2:
+            continue
+
+        home, away = (clean(p) for p in pieces)
+        if "juventus" not in {home.lower(), away.lower()}:
+            continue
+
+        # In AIA la designazione segue sempre le 5 righe successive.
+        following = [clean(x) for x in lines[idx + 1:idx + 9] if clean(x)]
+        if len(following) < 5:
+            continue
+
+        # Salta eventuali righe decorative inattese fino a trovare il blocco ruolo.
+        referee_idx = None
+        for j, candidate in enumerate(following[:3]):
+            if not re.match(r"^(?:IV|VAR|AVAR):\s*", candidate, re.I):
+                referee_idx = j
+                break
+
+        if referee_idx is None:
+            continue
+
+        referee = following[referee_idx]
+        assistants = following[referee_idx + 1] if len(following) > referee_idx + 1 else ""
+
+        iv = var = avar = ""
+        consumed = 0
+        for candidate in following[referee_idx + 2:referee_idx + 7]:
+            m = re.match(r"^(IV|VAR|AVAR):\s*(.+)$", candidate, re.I)
+            if not m:
+                # Una riga non di ruolo rompe il blocco: stop.
+                break
+            key = m.group(1).upper()
+            value = clean(m.group(2))
+            if key == "IV":
+                iv = value
+            elif key == "VAR":
+                var = value
+            elif key == "AVAR":
+                avar = value
+            consumed += 1
+
+        if not (referee and assistants and iv and var and avar):
+            continue
+
+        roles = {
+            "ARBITRO": normalize_official_name(referee),
+            "ASSISTENTI": " – ".join(
+                normalize_official_name(part)
+                for part in re.split(r"\s+[–-]\s+", assistants)
+                if clean(part)
+            ),
+            "IV": normalize_official_name(iv),
+            "VAR": normalize_official_name(var),
+            "AVAR": normalize_official_name(avar),
+        }
+
+        # Titolo pulito della partita per hashtag/log.
+        title = f"{home.title()} – {away.title()}"
+        return title, roles
+
+    return None, {}
+
+
+def hashtag_italia(title: str) -> str:
+    """Italia: CagliariJuve, HVeronaJuve, ecc. (avversaria + Juve)."""
+    parts = TEAM_SEPARATOR_RE.split(clean(title), maxsplit=1)
+    if len(parts) != 2:
+        opponent = re.sub(r"\bjuventus\b", "", title, flags=re.I)
+    else:
+        left, right = (clean(p) for p in parts)
+        opponent = right if left.lower() == "juventus" else left
+
+    opponent = re.sub(r"\bjuventus\b", "", opponent, flags=re.I)
+    opponent = re.sub(r"[^A-Za-zÀ-ÖØ-öø-ÿ0-9\s]", " ", opponent)
+    words = [w for w in opponent.split() if w]
+    opponent_camel = "".join(w[:1].upper() + w[1:].lower() for w in words)
+    return f"{opponent_camel}Juve" if opponent_camel else "Juve"
+
+
+def format_message_italia(title: str, roles: dict) -> tuple[str, list[dict]]:
+    """Formato Italia.
+
+    Nessun country-code parser sui nomi AIA: evita che cognomi di tre lettere
+    vengano interpretati come codici nazione. Restano solo le custom emoji del prefisso.
+    """
+    prefix_text, prefix_entities = PREFIX_ITALIA
+    first_line = f"{prefix_text} Designazione arbitrale di #{hashtag_italia(title)}:"
+    lines = [first_line, ""]
+
+    for role in ("ARBITRO", "ASSISTENTI", "IV", "VAR", "AVAR"):
+        if roles.get(role):
+            lines.append(f"{role}: {roles[role]}")
+
+    return "\n".join(lines), list(prefix_entities)
+
+
+# =========================
+# UEFA - CONTROLLO ORIGINALE
+# =========================
 def check_uefa(state):
     changed = False
 
@@ -397,7 +546,6 @@ def check_uefa(state):
             viewport={"width": 1280, "height": 900},
         )
         page = context.new_page()
-
         try:
             for competition, calendar in UEFA.items():
                 try:
@@ -410,7 +558,6 @@ def check_uefa(state):
                 links = find_match_links(soup)
                 nuove = 0
                 gia_inviate = 0
-
                 for url in links:
                     mid = match_id(url)
                     if not mid:
@@ -419,7 +566,6 @@ def check_uefa(state):
                     if key in state["uefa"]:
                         gia_inviate += 1
                         continue
-
                     try:
                         match_html = render_url(page, url)
                         match_page = BeautifulSoup(match_html, "html.parser")
@@ -430,7 +576,6 @@ def check_uefa(state):
                     text = clean(match_page.get_text(" ", strip=True))
                     if "juventus" not in text.lower():
                         continue
-
                     roles = extract_roles(match_page)
                     if not roles.get("ARBITRO"):
                         continue
@@ -439,7 +584,6 @@ def check_uefa(state):
                     mancanti = [r for r in ("ASSISTENTI", "IV", "VAR", "AVAR") if not roles.get(r)]
                     if mancanti:
                         print(f"[UEFA] {title}: designazione incompleta (mancano {', '.join(mancanti)})")
-
                     message, entities = format_message(PREFIX_UEFA, title, roles)
                     try:
                         send_telegram(message, entities)
@@ -458,7 +602,6 @@ def check_uefa(state):
                     changed = True
                     nuove += 1
                     print(f"[UEFA] ✅ inviata: {title} ({competition})")
-
                 print(f"[UEFA] {competition}: {len(links)} partite, {gia_inviate} già inviate, {nuove} nuove")
         finally:
             browser.close()
@@ -466,6 +609,9 @@ def check_uefa(state):
     return changed
 
 
+# =========================
+# ITALIA - CONTROLLO CORRETTO
+# =========================
 def parse_date(text):
     months = {
         "gennaio": 1, "febbraio": 2, "marzo": 3, "aprile": 4,
@@ -482,38 +628,79 @@ def parse_date(text):
 
 
 def article_links(soup):
+    """Estrae solo i link delle designazioni di Serie A dal sito AIA."""
     result = []
+    seen = set()
     for a in soup.find_all("a", href=True):
-        if clean(a.get_text(" ", strip=True)):
-            result.append(urljoin(AIA, a["href"]))
-    return list(dict.fromkeys(result))
+        label = clean(a.get_text(" ", strip=True))
+        href = urljoin(AIA, a["href"])
+        lower = href.lower()
+        if not label:
+            continue
+        if "/news/" not in lower:
+            continue
+        if "designazioni" not in lower or "serie-a" not in lower:
+            continue
+        if href not in seen:
+            result.append(href)
+            seen.add(href)
+    return result
+
+
+def aia_search_index():
+    """Seconda sorgente AIA: la ricerca interna per le designazioni Serie A.
+
+    È usata come fallback perché l'archivio per categoria può non essere ancora
+    aggiornato immediatamente dopo la pubblicazione di una nuova designazione.
+    """
+    url = AIA + "&cerca=" + quote_plus("SERIE A ENILIVE - DESIGNAZIONI")
+    try:
+        response = request(url)
+        return BeautifulSoup(response.content, "html.parser")
+    except Exception as exc:
+        print(f"[ITALIA] ricerca AIA non disponibile -> {exc}")
+        return None
 
 
 def check_italia(state):
     today = datetime.now(ROME).date().isoformat()
-    try:
-        index = BeautifulSoup(request(AIA).text, "html.parser")
-    except Exception as exc:
-        print(f"[ITALIA] errore nell'indice AIA -> {exc}")
-        return False
 
     changed = False
     nuove = 0
     gia_inviate = 0
-    articoli = article_links(index)
+
+    # 1) Archivio categoria AIA.
+    articoli = []
+    try:
+        index_response = request(AIA)
+        index = BeautifulSoup(index_response.content, "html.parser")
+        articoli.extend(article_links(index))
+    except Exception as exc:
+        print(f"[ITALIA] errore nell'indice AIA -> {exc}")
+
+    # 2) Fallback sulla ricerca interna AIA per intercettare articoli appena pubblicati.
+    search_index = aia_search_index()
+    if search_index is not None:
+        articoli.extend(article_links(search_index))
+
+    # Deduplica mantenendo l'ordine.
+    articoli = list(dict.fromkeys(articoli))
 
     for url in articoli:
         try:
-            soup = BeautifulSoup(request(url).text, "html.parser")
-        except Exception:
+            response = request(url)
+            soup = BeautifulSoup(response.content, "html.parser")
+        except Exception as exc:
+            print(f"[ITALIA] errore pagina {url} -> {exc}")
             continue
 
-        text = clean(soup.get_text(" ", strip=True))
-        if parse_date(text) != today or "juventus" not in text.lower():
+        # Data di pubblicazione: prendiamo il testo pulito dell'articolo/pagina.
+        page_text = "\n".join(soup_text_lines(soup))
+        if parse_date(page_text) != today:
             continue
 
-        roles = extract_roles(soup)
-        if not roles.get("ARBITRO"):
+        title, roles = extract_italia_assignment(soup)
+        if not title or not roles.get("ARBITRO"):
             continue
 
         key = f"{today}:{url}"
@@ -521,8 +708,8 @@ def check_italia(state):
             gia_inviate += 1
             continue
 
-        title = title_from_soup(soup)
-        message, entities = format_message(PREFIX_ITALIA, title, roles)
+        message, entities = format_message_italia(title, roles)
+
         try:
             send_telegram(message, entities)
         except Exception as exc:
