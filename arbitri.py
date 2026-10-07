@@ -343,21 +343,29 @@ def format_message(prefix_data: tuple, title: str, roles: dict) -> tuple[str, li
 
 
 # =========================
-# AIA - NUOVO PARSER ROBUSTO
+# AIA / ITALIA - PARSER ROBUSTO
 # =========================
-TEAM_SEPARATOR_RE = re.compile(r"\s+[–-]\s+")
+# IMPORTANTE: questo blocco è separato dalla logica UEFA.
+#
+# La ricerca interna AIA con ?cerca=... restituisce attualmente HTTP 400.
+# Per questo NON viene più usata. L'archivio categoria ?c=9 è la sorgente
+# principale e viene paginato in modo esplicito.
+TEAM_SEPARATOR_RE = re.compile(r"\s*[–—-]\s*")
 DATE_SUFFIX_RE = re.compile(
-    r"\s+(?:(?:Venerdì|Sabato|Domenica|Lunedì|Martedì|Mercoledì|Giovedì)\b.*|\d{1,2}/\d{1,2}\b.*)$",
+    r"\s+(?:(?:Venerdì|Sabato|Domenica|Lunedì|Martedì|Mercoledì|Giovedì)\b.*|"
+    r"h\.?\s*\d{1,2}(?::\d{2})?.*|\d{1,2}/\d{1,2}\b.*)$",
     re.I,
 )
 
+# Copre le occasioni in cui il workflow è rimasto fermo per alcuni giorni.
+# Non si usa più la condizione "pubblicato oggi", perché una designazione AIA
+# può essere pubblicata il giorno precedente e il workflow può eseguirsi dopo.
+ITALIA_LOOKBACK_DAYS = 45
+AIA_CATEGORY_PAGES = 6
+
 
 def soup_text_lines(soup):
-    """Ritorna solo stringhe visibili, preservando i blocchi separati dell'articolo.
-
-    L'estrazione NON usa soup.get_text() sull'intera pagina per trovare la designazione:
-    i dati vengono cercati riga per riga, evitando menu/footer.
-    """
+    """Estrae stringhe visibili e rimuove BOM/footer rumorosi."""
     for tag in soup(["script", "style", "noscript", "svg"]):
         tag.decompose()
 
@@ -369,138 +377,208 @@ def soup_text_lines(soup):
     return lines
 
 
-def normalize_official_name(name: str) -> str:
-    """AIA: nomi con solo la prima lettera maiuscola.
+def _looks_like_italia_designation_title(value):
+    value = clean(value).replace("\ufeff", "")
+    upper = value.upper()
+    return (
+        "SERIE A ENILIVE" in upper
+        and "DESIGNAZIONI" in upper
+        and "VARIAZIONE" not in upper
+    )
 
-    Esempi:
-      MARCENARO -> Marcenaro
-      ROSSI C. -> Rossi C.
-      LO CICERO -> Lo Cicero
-      FERRIERI CAPUTI -> Ferrieri Caputi
+
+def article_text_lines(soup):
+    """Restituisce solo il corpo utile dell'articolo AIA.
+
+    L'header/menu/footer della pagina AIA contiene molto testo non pertinente.
+    Partiamo dal titolo della designazione e ci fermiamo prima del footer.
+    """
+    lines = soup_text_lines(soup)
+    start = None
+
+    for i, line in enumerate(lines):
+        if _looks_like_italia_designation_title(line):
+            start = i
+            break
+
+    if start is None:
+        return lines
+
+    useful = []
+    footer_markers = (
+        "(aut. Tribunale di Roma n. 499 del 01/09/1989)",
+        "Via Campania 47",
+        "Copyrights ©",
+        "Copyright ©",
+        "Privacy Policy / Cookie Policy",
+    )
+
+    for line in lines[start:]:
+        if any(marker.lower() in line.lower() for marker in footer_markers):
+            break
+        useful.append(line)
+
+    return useful
+
+
+def normalize_official_name(name: str) -> str:
+    """AIA: capitalizzazione normale del nome.
+
+    MARCENARO -> Marcenaro
+    ROSSI C.   -> Rossi C.
+    LO CICERO  -> Lo Cicero
+    FERRIERI CAPUTI -> Ferrieri Caputi
     """
     name = clean(name)
     name = re.sub(r"\s*\(foto\)\s*", "", name, flags=re.I)
     name = name.strip(" -–—")
 
-    # Mantiene iniziali come C., J.L. e apostrofi, normalizzando il resto.
     tokens = []
     for token in name.split():
         if not token:
             continue
         pieces = re.split(r"([\-'’])", token)
-        normalized_pieces = []
+        normalized = []
         for piece in pieces:
             if piece in {"-", "'", "’"}:
-                normalized_pieces.append(piece)
+                normalized.append(piece)
             elif piece:
-                normalized_pieces.append(piece[:1].upper() + piece[1:].lower())
-        tokens.append("".join(normalized_pieces))
+                normalized.append(piece[:1].upper() + piece[1:].lower())
+        tokens.append("".join(normalized))
 
     return " ".join(tokens)
 
 
 def _strip_match_date(line: str) -> str:
     line = clean(line).replace("\ufeff", "")
-    line = DATE_SUFFIX_RE.sub("", line).strip()
-    return line
+    return DATE_SUFFIX_RE.sub("", line).strip()
+
+
+def _next_nonempty(lines, start, limit=20):
+    """Ritorna (indice, valore) della prima stringa utile dopo start."""
+    end = min(len(lines), start + limit)
+    for i in range(start, end):
+        value = clean(lines[i])
+        if value:
+            return i, value
+    return None, ""
+
+
+def _read_aia_role(lines, start, role):
+    """Legge un ruolo AIA sia in forma 'IV: DOVERI' sia su due nodi 'IV:'/'DOVERI'."""
+    pattern = re.compile(rf"^{re.escape(role)}\s*:\s*(.*)$", re.I)
+    label_only = re.compile(rf"^{re.escape(role)}\s*:\s*$", re.I)
+
+    for i in range(start, min(len(lines), start + 12)):
+        value = clean(lines[i])
+        if not value:
+            continue
+
+        m = pattern.match(value)
+        if m:
+            inline = clean(m.group(1))
+            if inline:
+                return i + 1, inline
+            j, next_value = _next_nonempty(lines, i + 1, limit=4)
+            if j is not None:
+                return j + 1, next_value
+
+        if label_only.match(value):
+            j, next_value = _next_nonempty(lines, i + 1, limit=4)
+            if j is not None:
+                return j + 1, next_value
+
+    return start, ""
 
 
 def extract_italia_assignment(soup):
-    """Estrae esclusivamente il blocco CAGLIARI – JUVENTUS (o altra gara Juve)
-    dalla pagina AIA.
+    """Estrae il solo blocco della gara della Juventus dalla pagina AIA."""
+    lines = article_text_lines(soup)
 
-    La struttura AIA 2026/27 è posizionale:
-      gara
-      arbitro
-      assistenti
-      IV: ...
-      VAR: ...
-      AVAR: ...
+    for idx, raw_line in enumerate(lines):
+        line = clean(raw_line).replace("—", "–")
 
-    Non cerca le etichette "ARBITRO"/"ASSISTENTI" perché sul sito AIA non ci sono.
-    """
-    lines = soup_text_lines(soup)
-
-    for idx, line in enumerate(lines):
-        normalized = line.replace("—", "–")
-        if not re.search(r"\bJUVENTUS\b", normalized, re.I):
+        if not re.search(r"\bJUVENTUS\b", line, re.I):
             continue
-        if not TEAM_SEPARATOR_RE.search(normalized):
+        if not TEAM_SEPARATOR_RE.search(line):
+            continue
+        if len(line) > 180:
             continue
 
-        match_line = clean(normalized)
-        # Evita eventuali voci di menu/contenuti estranei.
-        if len(match_line) > 180:
-            continue
-
-        teams_part = _strip_match_date(match_line)
+        teams_part = _strip_match_date(line)
         pieces = TEAM_SEPARATOR_RE.split(teams_part, maxsplit=1)
         if len(pieces) != 2:
             continue
 
         home, away = (clean(p) for p in pieces)
+        if home.lower() == away.lower():
+            continue
         if "juventus" not in {home.lower(), away.lower()}:
             continue
 
-        # In AIA la designazione segue sempre le 5 righe successive.
-        following = [clean(x) for x in lines[idx + 1:idx + 9] if clean(x)]
-        if len(following) < 5:
+        # La struttura AIA è posizionale:
+        # gara / arbitro / assistenti / IV / VAR / AVAR.
+        referee_idx, referee = _next_nonempty(lines, idx + 1, limit=6)
+        if referee_idx is None or not referee:
             continue
 
-        # Salta eventuali righe decorative inattese fino a trovare il blocco ruolo.
-        referee_idx = None
-        for j, candidate in enumerate(following[:3]):
-            if not re.match(r"^(?:IV|VAR|AVAR):\s*", candidate, re.I):
-                referee_idx = j
-                break
+        # '(foto)' può comparire attaccato o come nodo separato.
+        if referee.lower() == "(foto)":
+            referee_idx, referee = _next_nonempty(lines, referee_idx + 1, limit=4)
+            if referee_idx is None or not referee:
+                continue
 
-        if referee_idx is None:
+        assistants_idx, assistants = _next_nonempty(lines, referee_idx + 1, limit=6)
+        if assistants_idx is None or not assistants:
+            continue
+        if re.match(r"^(IV|VAR|AVAR)\s*:", assistants, re.I):
             continue
 
-        referee = following[referee_idx]
-        assistants = following[referee_idx + 1] if len(following) > referee_idx + 1 else ""
-
-        iv = var = avar = ""
-        consumed = 0
-        for candidate in following[referee_idx + 2:referee_idx + 7]:
-            m = re.match(r"^(IV|VAR|AVAR):\s*(.+)$", candidate, re.I)
-            if not m:
-                # Una riga non di ruolo rompe il blocco: stop.
-                break
-            key = m.group(1).upper()
-            value = clean(m.group(2))
-            if key == "IV":
-                iv = value
-            elif key == "VAR":
-                var = value
-            elif key == "AVAR":
-                avar = value
-            consumed += 1
+        role_pos = assistants_idx + 1
+        role_pos, iv = _read_aia_role(lines, role_pos, "IV")
+        role_pos, var = _read_aia_role(lines, role_pos, "VAR")
+        role_pos, avar = _read_aia_role(lines, role_pos, "AVAR")
 
         if not (referee and assistants and iv and var and avar):
             continue
 
+        assistant_names = []
+        for part in re.split(r"\s*[–—-]\s*", assistants):
+            part = clean(part)
+            if part:
+                assistant_names.append(normalize_official_name(part))
+
         roles = {
             "ARBITRO": normalize_official_name(referee),
-            "ASSISTENTI": " – ".join(
-                normalize_official_name(part)
-                for part in re.split(r"\s+[–-]\s+", assistants)
-                if clean(part)
-            ),
+            "ASSISTENTI": " – ".join(assistant_names),
             "IV": normalize_official_name(iv),
             "VAR": normalize_official_name(var),
             "AVAR": normalize_official_name(avar),
         }
 
-        # Titolo pulito della partita per hashtag/log.
-        title = f"{home.title()} – {away.title()}"
+        # Team names puliti: niente giorno/data/orario.
+        title = f"{normalize_team_name(home)} – {normalize_team_name(away)}"
         return title, roles
 
     return None, {}
 
 
+def normalize_team_name(name: str) -> str:
+    """Capitalizzazione leggibile dei nomi squadra senza alterare sigle iniziali."""
+    name = clean(name)
+    words = []
+    for word in name.split():
+        if len(word) <= 2 and word.upper() == word:
+            words.append(word.upper())
+        elif "." in word and len(word) <= 4:
+            words.append(word.upper())
+        else:
+            words.append(word[:1].upper() + word[1:].lower())
+    return " ".join(words)
+
+
 def hashtag_italia(title: str) -> str:
-    """Italia: CagliariJuve, HVeronaJuve, ecc. (avversaria + Juve)."""
+    """Italia: avversaria + Juve, es. CagliariJuve."""
     parts = TEAM_SEPARATOR_RE.split(clean(title), maxsplit=1)
     if len(parts) != 2:
         opponent = re.sub(r"\bjuventus\b", "", title, flags=re.I)
@@ -516,11 +594,6 @@ def hashtag_italia(title: str) -> str:
 
 
 def format_message_italia(title: str, roles: dict) -> tuple[str, list[dict]]:
-    """Formato Italia.
-
-    Nessun country-code parser sui nomi AIA: evita che cognomi di tre lettere
-    vengano interpretati come codici nazione. Restano solo le custom emoji del prefisso.
-    """
     prefix_text, prefix_entities = PREFIX_ITALIA
     first_line = f"{prefix_text} Designazione arbitrale di #{hashtag_italia(title)}:"
     lines = [first_line, ""]
@@ -618,75 +691,108 @@ def parse_date(text):
         "maggio": 5, "giugno": 6, "luglio": 7, "agosto": 8,
         "settembre": 9, "ottobre": 10, "novembre": 11, "dicembre": 12,
     }
-    m = re.search(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b", text)
+    value = clean(text).replace("\ufeff", "")
+
+    m = re.search(r"\b(\d{1,2})[/-](\d{1,2})[/-](\d{4})\b", value)
     if m:
         return f"{int(m.group(3)):04d}-{int(m.group(2)):02d}-{int(m.group(1)):02d}"
-    m = re.search(r"\b(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})\b", text, re.I)
+
+    m = re.search(r"\b(\d{1,2})\s+([A-Za-zÀ-ÿ]+)\s+(\d{4})\b", value, re.I)
     if m and m.group(2).lower() in months:
         return f"{m.group(3)}-{months[m.group(2).lower()]:02d}-{int(m.group(1)):02d}"
     return None
 
 
+def article_publication_date(soup):
+    """Trova la data di pubblicazione vicino al titolo dell'articolo, non nelle gare."""
+    lines = article_text_lines(soup)
+    for line in lines[:12]:
+        value = parse_date(line)
+        if value:
+            return value
+    return None
+
+
 def article_links(soup):
-    """Estrae solo i link delle designazioni di Serie A dal sito AIA."""
+    """Estrae esclusivamente le designazioni Serie A ENILIVE, escludendo le variazioni."""
     result = []
     seen = set()
+
     for a in soup.find_all("a", href=True):
-        label = clean(a.get_text(" ", strip=True))
+        label = clean(a.get_text(" ", strip=True)).replace("\ufeff", "")
         href = urljoin(AIA, a["href"])
         lower = href.lower()
-        if not label:
-            continue
+        upper_label = label.upper()
+
         if "/news/" not in lower:
             continue
-        if "designazioni" not in lower or "serie-a" not in lower:
+        if "serie-a-enilive" not in lower:
             continue
+        if "designazioni" not in lower:
+            continue
+        if "variazione" in lower or "VARIAZIONE" in upper_label:
+            continue
+
+        # Se il testo del link è disponibile, richiediamo esplicitamente la
+        # stringa SERIE A ENILIVE - DESIGNAZIONI.
+        if label and not _looks_like_italia_designation_title(label):
+            continue
+
+        href = href.split("#", 1)[0]
         if href not in seen:
             result.append(href)
             seen.add(href)
+
     return result
 
 
-def aia_search_index():
-    """Seconda sorgente AIA: la ricerca interna per le designazioni Serie A.
+def aia_category_urls():
+    """Genera le pagine dell'archivio Designazioni AIA senza usare il campo ricerca."""
+    yield AIA
+    for page_number in range(1, AIA_CATEGORY_PAGES):
+        yield f"{AIA}&p={page_number}"
 
-    È usata come fallback perché l'archivio per categoria può non essere ancora
-    aggiornato immediatamente dopo la pubblicazione di una nuova designazione.
-    """
-    url = AIA + "&cerca=" + quote_plus("SERIE A ENILIVE - DESIGNAZIONI")
-    try:
-        response = request(url)
-        return BeautifulSoup(response.content, "html.parser")
-    except Exception as exc:
-        print(f"[ITALIA] ricerca AIA non disponibile -> {exc}")
-        return None
+
+def _italia_state_has_url(state, url):
+    """Compatibile con il vecchio stato (chiavi data:url) e con il nuovo (url)."""
+    bucket = state.setdefault("italia", {})
+    if url in bucket:
+        return True
+    suffix = ":" + url
+    return any(key.endswith(suffix) for key in bucket)
 
 
 def check_italia(state):
-    today = datetime.now(ROME).date().isoformat()
-
+    today = datetime.now(ROME).date()
     changed = False
     nuove = 0
     gia_inviate = 0
+    controllati = 0
 
-    # 1) Archivio categoria AIA.
+    # La ricerca AIA ?cerca=... restituisce HTTP 400: non viene più chiamata.
+    # Usiamo direttamente l'archivio categoria e le sue pagine.
     articoli = []
-    try:
-        index_response = request(AIA)
-        index = BeautifulSoup(index_response.content, "html.parser")
-        articoli.extend(article_links(index))
-    except Exception as exc:
-        print(f"[ITALIA] errore nell'indice AIA -> {exc}")
+    seen_urls = set()
 
-    # 2) Fallback sulla ricerca interna AIA per intercettare articoli appena pubblicati.
-    search_index = aia_search_index()
-    if search_index is not None:
-        articoli.extend(article_links(search_index))
-
-    # Deduplica mantenendo l'ordine.
-    articoli = list(dict.fromkeys(articoli))
+    for index_url in aia_category_urls():
+        try:
+            index_response = request(index_url)
+            index = BeautifulSoup(index_response.content, "html.parser")
+            links = article_links(index)
+            for url in links:
+                if url not in seen_urls:
+                    articoli.append(url)
+                    seen_urls.add(url)
+        except Exception as exc:
+            print(f"[ITALIA] errore indice AIA {index_url} -> {exc}")
 
     for url in articoli:
+        controllati += 1
+
+        if _italia_state_has_url(state, url):
+            gia_inviate += 1
+            continue
+
         try:
             response = request(url)
             soup = BeautifulSoup(response.content, "html.parser")
@@ -694,18 +800,25 @@ def check_italia(state):
             print(f"[ITALIA] errore pagina {url} -> {exc}")
             continue
 
-        # Data di pubblicazione: prendiamo il testo pulito dell'articolo/pagina.
-        page_text = "\n".join(soup_text_lines(soup))
-        if parse_date(page_text) != today:
+        publication_date = article_publication_date(soup)
+        if publication_date:
+            try:
+                pub_day = datetime.strptime(publication_date, "%Y-%m-%d").date()
+            except ValueError:
+                pub_day = None
+            if pub_day is not None:
+                age_days = (today - pub_day).days
+                if age_days > ITALIA_LOOKBACK_DAYS:
+                    continue
+                if age_days < -2:
+                    # Protezione contro date anomale future provenienti da un parsing errato.
+                    continue
+        else:
+            print(f"[ITALIA] data pubblicazione non trovata -> {url}")
             continue
 
         title, roles = extract_italia_assignment(soup)
         if not title or not roles.get("ARBITRO"):
-            continue
-
-        key = f"{today}:{url}"
-        if key in state["italia"]:
-            gia_inviate += 1
             continue
 
         message, entities = format_message_italia(title, roles)
@@ -716,8 +829,11 @@ def check_italia(state):
             print(f"[ITALIA] {title}: invio Telegram fallito -> {exc}")
             continue
 
-        state["italia"][key] = {
-            "date": today,
+        # La URL è l'identificativo stabile dell'articolo: evita il problema
+        # del vecchio formato data:url quando il workflow viene eseguito in un
+        # giorno diverso dalla pubblicazione.
+        state["italia"][url] = {
+            "date": publication_date,
             "match": title,
             "url": url,
             "sent_at": datetime.now(ROME).isoformat(),
@@ -727,7 +843,7 @@ def check_italia(state):
         nuove += 1
         print(f"[ITALIA] ✅ inviata: {title}")
 
-    print(f"[ITALIA] {len(articoli)} articoli controllati, {gia_inviate} già inviate, {nuove} nuove")
+    print(f"[ITALIA] {controllati} articoli controllati, {gia_inviate} già inviate, {nuove} nuove")
     return changed
 
 
