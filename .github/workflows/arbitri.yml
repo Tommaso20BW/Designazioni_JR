@@ -105,6 +105,39 @@ jobs:
           echo "Attendo 10 minuti prima di avviare il nuovo run..."
           sleep 600
 
-          echo "Avvio un nuovo run di Controlla Designazioni..."
-          gh workflow run arbitri.yml --ref "$TARGET_REF"
-          echo "Nuovo run avviato."
+          MAX_ATTEMPTS=5
+
+          for ATTEMPT in $(seq 1 "$MAX_ATTEMPTS"); do
+            echo "Avvio un nuovo run di Controlla Designazioni..."
+            echo "Tentativo $ATTEMPT/$MAX_ATTEMPTS"
+
+            if OUTPUT=$(gh workflow run arbitri.yml --ref "$TARGET_REF" 2>&1); then
+              if [[ -n "$OUTPUT" ]]; then
+                echo "$OUTPUT"
+              fi
+
+              echo "Richiesta di avvio del nuovo run inviata correttamente."
+              exit 0
+            else
+              EXIT_CODE=$?
+              echo "$OUTPUT" >&2
+
+              if [[ "$OUTPUT" =~ HTTP\ (429|500|502|503|504) ]]; then
+                if [[ "$ATTEMPT" -lt "$MAX_ATTEMPTS" ]]; then
+                  case "$ATTEMPT" in
+                    1) WAIT=15 ;;
+                    2) WAIT=30 ;;
+                    3) WAIT=60 ;;
+                    4) WAIT=120 ;;
+                  esac
+
+                  echo "Errore temporaneo GitHub. Nuovo tentativo tra $WAIT secondi..."
+                  sleep "$WAIT"
+                  continue
+                fi
+              fi
+
+              echo "::error::Impossibile avviare il nuovo run."
+              exit "$EXIT_CODE"
+            fi
+          done
