@@ -303,17 +303,24 @@ def add_flags_with_entities(text: str) -> tuple[str, list[dict]]:
     return "".join(result_chars), entities
 
 
+def _camel(name):
+    name = re.sub(r"[^A-Za-zÀ-ÖØ-öø-ÿ\s]", "", name)
+    return "".join(w[:1].upper() + w[1:].lower() for w in name.split())
+
+
 def hashtag(title):
-    # FUNZIONE ORIGINALE UEFA: invariata.
-    parts = [clean(p) for p in re.split(r"\b(?:vs|v|-)\b", title, flags=re.I)]
-    parts = [p for p in parts if p]
-    opponent = next((p for p in parts if "juventus" not in p.lower()), None)
-    if opponent is None:
-        opponent = re.sub(r"juventus", "", title, flags=re.I)
-    opponent = re.sub(r"[^A-Za-zÀ-ÖØ-öø-ÿ\s]", "", opponent)
-    words = [w for w in opponent.split() if w]
-    opponent_camel = "".join(w[:1].upper() + w[1:].lower() for w in words)
-    return f"Juve{opponent_camel}" if opponent_camel else "Juve"
+    # L'ordine segue casa-trasferta come nel titolo UEFA ("Celta vs Juventus"):
+    # Juve in casa -> JuveCelta, Juve in trasferta -> CeltaJuve.
+    parts = [clean(p) for p in re.split(r"\s+(?:vs\.?|v|-|–|—)\s+", title, maxsplit=1, flags=re.I)]
+    if len(parts) != 2:
+        opponent = _camel(re.sub(r"juventus", "", title, flags=re.I))
+        return f"Juve{opponent}" if opponent else "Juve"
+    home, away = parts
+    juve_home = "juventus" in home.lower()
+    opponent = _camel(away if juve_home else home)
+    if not opponent:
+        return "Juve"
+    return f"Juve{opponent}" if juve_home else f"{opponent}Juve"
 
 
 def format_message(prefix_data: tuple, title: str, roles: dict) -> tuple[str, list[dict]]:
@@ -595,19 +602,23 @@ def normalize_team_name(name: str) -> str:
 
 
 def hashtag_italia(title: str) -> str:
-    """Italia: avversaria + Juve, es. CagliariJuve."""
+    """Italia: ordine casa-trasferta, es. JuveCagliari (casa) / CagliariJuve (trasferta)."""
     parts = TEAM_SEPARATOR_RE.split(clean(title), maxsplit=1)
     if len(parts) != 2:
         opponent = re.sub(r"\bjuventus\b", "", title, flags=re.I)
+        juve_home = True
     else:
         left, right = (clean(p) for p in parts)
-        opponent = right if left.lower() == "juventus" else left
+        juve_home = "juventus" in left.lower()
+        opponent = right if juve_home else left
 
     opponent = re.sub(r"\bjuventus\b", "", opponent, flags=re.I)
     opponent = re.sub(r"[^A-Za-zÀ-ÖØ-öø-ÿ0-9\s]", " ", opponent)
     words = [w for w in opponent.split() if w]
     opponent_camel = "".join(w[:1].upper() + w[1:].lower() for w in words)
-    return f"{opponent_camel}Juve" if opponent_camel else "Juve"
+    if not opponent_camel:
+        return "Juve"
+    return f"Juve{opponent_camel}" if juve_home else f"{opponent_camel}Juve"
 
 
 def format_message_italia(title: str, roles: dict) -> tuple[str, list[dict]]:
