@@ -13,6 +13,13 @@
       "match": "Celta vs Juventus",
       "url": "https://it.uefa.com/uefaeuropaleague/match/2050089--celta-vs-juventus/matchinfo/",
       "sent_at": "2026-10-13T10:24:50.308287+02:00"
+    },
+    "Europa League:2050093": {
+      "competition": "Europa League",
+      "match_id": "2050093",
+      "match": "Juventus vs Rennes",
+      "url": "https://it.uefa.com/uefaeuropaleague/match/2050093--juventus-vs-rennes/matchinfo/",
+      "sent_at": "2026-10-20T10:16:49.631609+02:00"
     }
   },
   "italia": {
