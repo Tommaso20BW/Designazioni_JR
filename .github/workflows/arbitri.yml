@@ -2,6 +2,8 @@ name: Controlla Designazioni
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: "13,43 * * * *"
 
 concurrency:
   group: designazioni-jr-${{ github.ref }}
