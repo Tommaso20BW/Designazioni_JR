@@ -1,1 +1,33 @@
-{}
+{
+  "uefa": {},
+  "italia": {
+    "28785:LECCE-JUVENTUS": {
+      "match": "LECCE - JUVENTUS",
+      "date": "25/10",
+      "time": "18.00",
+      "roles": {
+        "ARBITRO": "Maresca",
+        "ASSISTENTI": "Mondin - Barone",
+        "IV": "Feliciani",
+        "VAR": "Paterna",
+        "AVAR": "Baroni"
+      },
+      "url": "https://www.aia-figc.it/news/serie-a-enilive-designazioni-8a-giornata-28785/",
+      "sent_at": "2026-10-21T21:02:47.152230+02:00"
+    },
+    "28778:JUVENTUS-LAZIO": {
+      "match": "JUVENTUS - LAZIO",
+      "date": "18/10",
+      "time": "20.45",
+      "roles": {
+        "ARBITRO": "Massa",
+        "ASSISTENTI": "Alassio - Berti",
+        "IV": "Maresca",
+        "VAR": "Meraviglia",
+        "AVAR": "Aureliano"
+      },
+      "url": "https://www.aia-figc.it/news/serie-a-enilive-designazioni-7a-giornata-28778/",
+      "sent_at": "2026-10-21T21:02:48.296814+02:00"
+    }
+  }
+}
