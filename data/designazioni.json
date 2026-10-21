@@ -34,12 +34,6 @@
       "match": "Juventus – Lazio",
       "url": "https://www.aia-figc.it/news/serie-a-enilive-designazioni-7a-giornata-28778/",
       "sent_at": "2026-10-14T12:36:38.788417+02:00"
-    },
-    "https://www.aia-figc.it/news/serie-a-enilive-designazioni-8a-giornata-28785/": {
-      "date": "2026-10-21",
-      "match": "Lecce – Juventus",
-      "url": "https://www.aia-figc.it/news/serie-a-enilive-designazioni-8a-giornata-28785/",
-      "sent_at": "2026-10-21T12:03:04.298824+02:00"
     }
   }
 }
