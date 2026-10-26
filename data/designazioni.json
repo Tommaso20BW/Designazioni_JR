@@ -50,6 +50,20 @@
       },
       "url": "https://www.aia-figc.it/news/serie-a-enilive-designazioni-7a-giornata-28778/",
       "sent_at": "2026-10-21T21:02:48.296814+02:00"
+    },
+    "28800:GENOA-JUVENTUS": {
+      "match": "GENOA - JUVENTUS",
+      "date": "28/10",
+      "time": "20.45",
+      "roles": {
+        "ARBITRO": "Doveri",
+        "ASSISTENTI": "Palermo - Yoshikawa",
+        "IV": "Di Marco",
+        "VAR": "Aureliano",
+        "AVAR": "Pezzuto"
+      },
+      "url": "https://www.aia-figc.it/news/serie-a-enilive-designazioni-9a-giornata-28800/",
+      "sent_at": "2026-10-26T12:08:23.326748+01:00"
     }
   }
 }
