@@ -64,6 +64,20 @@
       },
       "url": "https://www.aia-figc.it/news/serie-a-enilive-designazioni-9a-giornata-28800/",
       "sent_at": "2026-10-26T12:08:23.326748+01:00"
+    },
+    "28806:JUVENTUS-NAPOLI": {
+      "match": "JUVENTUS - NAPOLI",
+      "date": "",
+      "time": "20.45",
+      "roles": {
+        "ARBITRO": "Sozza",
+        "ASSISTENTI": "Imperiale - Colarossi",
+        "IV": "Doveri",
+        "VAR": "Meraviglia",
+        "AVAR": "Gariglio"
+      },
+      "url": "https://www.aia-figc.it/news/serie-a-enilive-designazioni-10a-giornata-28806/",
+      "sent_at": "2026-10-30T12:17:36.979073+01:00"
     }
   }
 }
