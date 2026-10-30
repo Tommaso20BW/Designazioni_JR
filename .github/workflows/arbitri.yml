@@ -75,7 +75,7 @@ jobs:
           git push origin "HEAD:$TARGET_REF"
 
       - name: Pulisci la cronologia dei run
-        if: always()
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           KEEP: "0"
@@ -96,7 +96,7 @@ jobs:
           echo "Pulizia completata."
 
       - name: Attendi 10 minuti e avvia il nuovo run
-        if: always()
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ github.token }}
           TARGET_REF: ${{ github.ref_name }}
