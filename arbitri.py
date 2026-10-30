@@ -445,7 +445,7 @@ def valid_roles(roles):
 
 HEADER_RE = re.compile(
     r"^(?P<home>.+?)\s+[–—-]\s+(?P<away>.+?)\s+"
-    r"(?P<day>[A-Za-zÀ-ÿ]+)\s+(?P<date>\d{1,2}/\d{1,2})\s+"
+    r"(?:(?P<day>[A-Za-zÀ-ÿ]+)\s+(?P<date>\d{1,2}/\d{1,2})\s+)?"  # giorno/data facoltativi
     r"h\.?\s*(?P<time>\d{1,2}[.:]\d{2})$",
     re.I,
 )
@@ -521,7 +521,7 @@ def parse_aia_matches(soup):
             current = {
                 "home": clean(m.group("home")),
                 "away": clean(m.group("away")),
-                "date": m.group("date"),
+                "date": m.group("date") or "",
                 "time": m.group("time"),
                 "roles": {},
             }
