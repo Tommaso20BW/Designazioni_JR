@@ -270,14 +270,19 @@ def split_officials(text):
     return re.sub(r"([A-Z]{3})\s+(?=[A-Z][a-z])", r"\1 - ", text or "")
 
 
+SEPARATOR_RE = re.compile(r"(\s+[–—-]\s+)")
+
+
 def add_flags_with_entities(text: str) -> tuple[str, list[dict]]:
+    """Sostituisce i codici paese con le emoji custom e mette in grassetto
+    solo i nomi (bandiere e separatori " - " restano fuori dal grassetto)."""
     result_chars: list[str] = []
     entities: list[dict] = []
     offset_utf16 = 0
     parts = re.split(r"(\b[A-Z]{3}\b)", text or "")
 
     for part in parts:
-        if re.fullmatch(r"[A-Z]{3}", part):
+        if re.fullmatch(r"[A-Z]{3}", part) and (part in COUNTRY_CUSTOM_EMOJI or part in COUNTRY_FLAGS):
             if part in COUNTRY_CUSTOM_EMOJI:
                 emoji_char, eid = COUNTRY_CUSTOM_EMOJI[part]
                 length = _utf16_len(emoji_char)
@@ -287,18 +292,26 @@ def add_flags_with_entities(text: str) -> tuple[str, list[dict]]:
                     "type": "custom_emoji",
                     "custom_emoji_id": eid,
                 })
-                result_chars.append(emoji_char)
-                offset_utf16 += length
-            elif part in COUNTRY_FLAGS:
-                emoji_char = COUNTRY_FLAGS[part]
-                result_chars.append(emoji_char)
-                offset_utf16 += _utf16_len(emoji_char)
             else:
-                result_chars.append(part)
-                offset_utf16 += _utf16_len(part)
-        else:
-            result_chars.append(part)
-            offset_utf16 += _utf16_len(part)
+                emoji_char = COUNTRY_FLAGS[part]
+            result_chars.append(emoji_char)
+            offset_utf16 += _utf16_len(emoji_char)
+            continue
+
+        # testo normale: grassetto sui nomi, non sui separatori/spazi
+        for seg in SEPARATOR_RE.split(part):
+            if not seg:
+                continue
+            core = seg.strip()
+            if core and not SEPARATOR_RE.fullmatch(seg):
+                lead = seg[: len(seg) - len(seg.lstrip())]
+                entities.append({
+                    "offset": offset_utf16 + _utf16_len(lead),
+                    "length": _utf16_len(core),
+                    "type": "bold",
+                })
+            result_chars.append(seg)
+            offset_utf16 += _utf16_len(seg)
 
     return "".join(result_chars), entities
 
@@ -333,16 +346,17 @@ def format_message_uefa(prefix_data: tuple, title: str, roles: dict) -> tuple[st
         if not roles.get(role):
             continue
         label = f"{role}: "
-        flag_text, flag_entities = add_flags_with_entities(split_officials(roles[role]))
-        line = label + flag_text
-        label_offset = _utf16_len(label)
-        for ent in flag_entities:
+        value_text, value_entities = add_flags_with_entities(split_officials(roles[role]))
+        line = label + value_text
+        value_offset = base_offset + _utf16_len(label)
+        for ent in value_entities:
             shifted = dict(ent)
-            shifted["offset"] = base_offset + label_offset + ent["offset"]
+            shifted["offset"] = value_offset + ent["offset"]
             all_entities.append(shifted)
         lines.append(line)
         base_offset += _utf16_len(line + "\n")
 
+    all_entities.sort(key=lambda e: e["offset"])
     return "\n".join(lines), all_entities
 
 
