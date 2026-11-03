@@ -20,6 +20,13 @@
       "match": "Juventus vs Rennes",
       "url": "https://it.uefa.com/uefaeuropaleague/match/2050093--juventus-vs-rennes/matchinfo/",
       "sent_at": "2026-10-22T21:23:26.304013+02:00"
+    },
+    "Europa League:2050114": {
+      "competition": "Europa League",
+      "match_id": "2050114",
+      "match": "AZ Alkmaar vs Juventus",
+      "url": "https://it.uefa.com/uefaeuropaleague/match/2050114--az-alkmaar-vs-juventus/matchinfo/",
+      "sent_at": "2026-11-03T10:23:51.232408+01:00"
     }
   },
   "italia": {
