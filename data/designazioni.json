@@ -85,6 +85,20 @@
       },
       "url": "https://www.aia-figc.it/news/serie-a-enilive-designazioni-10a-giornata-28806/",
       "sent_at": "2026-10-30T12:17:36.979073+01:00"
+    },
+    "28822:FIORENTINA-JUVENTUS": {
+      "match": "FIORENTINA - JUVENTUS",
+      "date": "",
+      "time": "20.45",
+      "roles": {
+        "ARBITRO": "Colombo",
+        "ASSISTENTI": "Baccini - Ceccon",
+        "IV": "Maresca",
+        "VAR": "Di Paolo",
+        "AVAR": "Meraviglia"
+      },
+      "url": "https://www.aia-figc.it/news/serie-a-enilive-designazioni-11a-giornata-28822/",
+      "sent_at": "2026-11-04T12:08:22.559527+01:00"
     }
   }
 }
