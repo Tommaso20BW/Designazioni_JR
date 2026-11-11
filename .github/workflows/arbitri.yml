@@ -26,6 +26,24 @@ jobs:
           ref: ${{ github.ref_name }}
           fetch-depth: 0
 
+      # Nomi e hashtag corretti nella Mini App ImageGen (Impostazioni › Squadre), come in LiveScore.
+      # Senza il segreto ASSETS_PAT si salta: restano gli hashtag di teams.json.
+      - name: Controlla il segreto degli asset
+        id: asset
+        env:
+          ASSETS_PAT: ${{ secrets.ASSETS_PAT }}
+        run: echo "ok=${{ env.ASSETS_PAT != '' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Scarica le correzioni delle squadre
+        if: ${{ steps.asset.outputs.ok == 'true' }}
+        uses: actions/checkout@v6
+        with:
+          repository: Tommaso20BW/LiveScore_Assets_JR
+          token: ${{ secrets.ASSETS_PAT }}
+          path: _private_assets
+          sparse-checkout: team_overrides
+        continue-on-error: true
+
       - name: Configura Python
         uses: actions/setup-python@v6
         with:

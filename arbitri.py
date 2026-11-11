@@ -326,7 +326,40 @@ FIRMA_EMOJI = ("👉", "5985659276327132147")
 SQUADRE_URL = "https://raw.githubusercontent.com/Tommaso20BW/LiveScore_JR/main/data/teams.json"
 PAROLE_GENERICHE = {"ac", "acf", "afc", "as", "bc", "calcio", "cf", "club", "de", "fc", "fk",
                     "sc", "sk", "ss", "ssc", "sv", "us", "the"}
+CORREZIONI_DIR = BASE_DIR / "_private_assets" / "team_overrides"
 _squadre = None
+_correzioni = None
+
+
+def correzioni(cartella=None):
+    """[(nomi normalizzati, hashtag)] scelti nella Mini App ImageGen (Impostazioni › Squadre):
+    overrides.json (squadre con logo) e names.json (nome ESPN -> nome/hashtag)."""
+    global _correzioni
+    if _correzioni is not None and cartella is None:
+        return _correzioni
+    cartella = Path(cartella or CORREZIONI_DIR)
+    out = []
+    try:
+        voci = json.loads((cartella / "overrides.json").read_text(encoding="utf-8")).get("teams") or {}
+        for chiave, voce in voci.items():
+            tag = "".join(str((voce or {}).get("tag") or "").split()).lstrip("#")
+            if tag:
+                nomi = [chiave, voce.get("base"), voce.get("name"), *(voce.get("aliases") or [])]
+                out.append(({_norm(n) for n in nomi if n}, tag))
+    except (OSError, ValueError, AttributeError):
+        pass
+    try:
+        voci = json.loads((cartella / "names.json").read_text(encoding="utf-8")).get("teams") or {}
+        for espn, voce in voci.items():
+            tag = "".join(str((voce or {}).get("tag") or "").split()).lstrip("#")
+            if tag:
+                out.append(({_norm(espn), _norm(voce.get("name"))} - {""}, tag))
+    except (OSError, ValueError, AttributeError):
+        pass
+    if out:
+        print(f"[SQUADRE] {len(out)} hashtag corretti nella Mini App")
+    _correzioni = out
+    return out
 
 
 def squadre():
@@ -357,11 +390,17 @@ def _parole(name):
 
 
 def tag_squadra(name):
-    """Hashtag dal file di LiveScore cercando il nome più simile; None se non c'è."""
-    cerca = _norm(name)
-    if not cerca:
+    """Hashtag della Mini App, altrimenti di teams.json, cercando il nome più simile; None se non c'è."""
+    for elenco in (correzioni(), squadre()):
+        tag = _cerca_tag(_norm(name), elenco)
+        if tag:
+            return tag
+    return None
+
+
+def _cerca_tag(cerca, elenco):
+    if not cerca or not elenco:
         return None
-    elenco = squadre()
     for nomi, tag in elenco:                      # 1. stesso nome (ESPN o italiano)
         if cerca in nomi:
             return tag
