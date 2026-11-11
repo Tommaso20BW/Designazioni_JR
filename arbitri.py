@@ -3,7 +3,9 @@ import os
 import re
 import sys
 import time
+import unicodedata
 from datetime import datetime
+from difflib import SequenceMatcher
 from pathlib import Path
 from urllib.parse import urljoin
 from zoneinfo import ZoneInfo
@@ -320,23 +322,70 @@ FIRMA = "@Juventus_Reborn"
 FIRMA_LINK = "https://t.me/Juventus_Reborn"
 FIRMA_EMOJI = ("👉", "5985659276327132147")
 
-# Nomi brevi come sul canale (#AZJuve, #NECJuve, #VeronaJuve...).
-NOMI_BREVI = {
-    "JUVENTUS": "Juve", "AZ ALKMAAR": "AZ", "N.E.C.": "NEC", "NEC NIJMEGEN": "NEC",
-    "PSV EINDHOVEN": "PSV", "HELLAS VERONA": "Verona", "INTERNAZIONALE": "Inter",
-    "FC INTERNAZIONALE MILANO": "Inter", "AC MILAN": "Milan", "PARIS SAINT-GERMAIN": "PSG",
-    "MANCHESTER CITY": "City", "MANCHESTER UNITED": "United", "BORUSSIA DORTMUND": "Dortmund",
-    "BAYER 04 LEVERKUSEN": "Leverkusen", "BAYER LEVERKUSEN": "Leverkusen",
-    "CLUB BRUGGE": "Brugge", "SPORTING CP": "Sporting", "ATLÉTICO DE MADRID": "Atletico",
-    "ATLETICO MADRID": "Atletico", "REAL MADRID": "Real", "FC BARCELONA": "Barcellona",
-}
+# Hashtag delle squadre: lo stesso file di LiveScore (nome ESPN -> [nome italiano, hashtag]).
+SQUADRE_URL = "https://raw.githubusercontent.com/Tommaso20BW/LiveScore_JR/main/data/teams.json"
+PAROLE_GENERICHE = {"ac", "acf", "afc", "as", "bc", "calcio", "cf", "club", "de", "fc", "fk",
+                    "sc", "sk", "ss", "ssc", "sv", "us", "the"}
+_squadre = None
+
+
+def squadre():
+    """[(nomi normalizzati, hashtag)] dal file di LiveScore; lista vuota se non si scarica."""
+    global _squadre
+    if _squadre is None:
+        try:
+            r = requests.get(SQUADRE_URL, timeout=TIMEOUT)
+            r.raise_for_status()
+            _squadre = [({_norm(espn), _norm(voce[0])}, voce[1]) for espn, voce in r.json().items()
+                        if isinstance(voce, list) and len(voce) > 1 and voce[1]]
+            print(f"[SQUADRE] {len(_squadre)} hashtag caricati")
+        except Exception as exc:
+            print(f"[SQUADRE] file non disponibile: {exc}")
+            _squadre = []
+    return _squadre
+
+
+def _norm(name):
+    """Minuscole, senza accenti e punteggiatura: "N.E.C." -> "nec"."""
+    name = unicodedata.normalize("NFKD", str(name or "").casefold())
+    name = "".join(c for c in name if not unicodedata.combining(c)).replace(".", "")
+    return " ".join(re.findall(r"[a-z0-9]+", name))
+
+
+def _parole(name):
+    return set(name.split()) - PAROLE_GENERICHE
+
+
+def tag_squadra(name):
+    """Hashtag dal file di LiveScore cercando il nome più simile; None se non c'è."""
+    cerca = _norm(name)
+    if not cerca:
+        return None
+    elenco = squadre()
+    for nomi, tag in elenco:                      # 1. stesso nome (ESPN o italiano)
+        if cerca in nomi:
+            return tag
+    parole = _parole(cerca)
+    if parole:                                     # 2. stesse parole: "Celta" ~ "Celta Vigo"
+        trovati = {tag for nomi, tag in elenco
+                   if any(_parole(n) and (parole <= _parole(n) or _parole(n) <= parole) for n in nomi)}
+        if len(trovati) == 1:
+            return trovati.pop()
+    punti = sorted(((max(SequenceMatcher(None, cerca, n).ratio() for n in nomi), tag)
+                    for nomi, tag in elenco), reverse=True)
+    if punti and punti[0][0] >= 0.85 and (len(punti) == 1 or punti[0][0] - punti[1][0] >= 0.05):
+        return punti[0][1]                         # 3. nome scritto quasi uguale
+    return None
 
 
 def _camel(name):
-    """Nome per l'hashtag: abbreviazione nota, sigle in maiuscolo (AZ, PSV), il resto in CamelCase."""
+    """Hashtag della squadra: dal file di LiveScore, altrimenti il nome in CamelCase."""
     name = clean(name)
-    if name.upper() in NOMI_BREVI:
-        return NOMI_BREVI[name.upper()]
+    if _norm(name) == "juventus":
+        return "Juve"
+    tag = tag_squadra(name)
+    if tag:
+        return tag
     parole = re.sub(r"[^A-Za-z0-9À-ÖØ-öø-ÿ\s]", "", name).split()
     return "".join(w if w.isupper() and len(w) <= 3 and len(parole) > 1
                    else w[:1].upper() + w[1:].lower() for w in parole)
