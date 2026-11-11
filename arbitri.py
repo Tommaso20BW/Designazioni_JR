@@ -316,9 +316,50 @@ def add_flags_with_entities(text: str) -> tuple[str, list[dict]]:
     return "".join(result_chars), entities
 
 
+FIRMA = "@Juventus_Reborn"
+FIRMA_LINK = "https://t.me/Juventus_Reborn"
+FIRMA_EMOJI = ("👉", "5985659276327132147")
+
+# Nomi brevi come sul canale (#AZJuve, #NECJuve, #VeronaJuve...).
+NOMI_BREVI = {
+    "JUVENTUS": "Juve", "AZ ALKMAAR": "AZ", "N.E.C.": "NEC", "NEC NIJMEGEN": "NEC",
+    "PSV EINDHOVEN": "PSV", "HELLAS VERONA": "Verona", "INTERNAZIONALE": "Inter",
+    "FC INTERNAZIONALE MILANO": "Inter", "AC MILAN": "Milan", "PARIS SAINT-GERMAIN": "PSG",
+    "MANCHESTER CITY": "City", "MANCHESTER UNITED": "United", "BORUSSIA DORTMUND": "Dortmund",
+    "BAYER 04 LEVERKUSEN": "Leverkusen", "BAYER LEVERKUSEN": "Leverkusen",
+    "CLUB BRUGGE": "Brugge", "SPORTING CP": "Sporting", "ATLÉTICO DE MADRID": "Atletico",
+    "ATLETICO MADRID": "Atletico", "REAL MADRID": "Real", "FC BARCELONA": "Barcellona",
+}
+
+
 def _camel(name):
-    name = re.sub(r"[^A-Za-zÀ-ÖØ-öø-ÿ\s]", "", name)
-    return "".join(w[:1].upper() + w[1:].lower() for w in name.split())
+    """Nome per l'hashtag: abbreviazione nota, sigle in maiuscolo (AZ, PSV), il resto in CamelCase."""
+    name = clean(name)
+    if name.upper() in NOMI_BREVI:
+        return NOMI_BREVI[name.upper()]
+    parole = re.sub(r"[^A-Za-z0-9À-ÖØ-öø-ÿ\s]", "", name).split()
+    return "".join(w if w.isupper() and len(w) <= 3 and len(parole) > 1
+                   else w[:1].upper() + w[1:].lower() for w in parole)
+
+
+def entita_hashtag(testo):
+    """Hashtag dichiarati a mano: con le entities esplicite Telegram non li riconosce da solo."""
+    return [{"offset": _utf16_len(testo[:m.start()]), "length": _utf16_len(m.group()), "type": "hashtag"}
+            for m in re.finditer(r"#\w+", testo)]
+
+
+def con_firma(testo, entities):
+    """Riga vuota + 👉 @Juventus_Reborn, come nei post del canale."""
+    emoji, emoji_id = FIRMA_EMOJI
+    testo += "\n\n"
+    inizio = _utf16_len(testo)
+    entities = list(entities) + entita_hashtag(testo) + [
+        {"offset": inizio, "length": _utf16_len(emoji), "type": "custom_emoji", "custom_emoji_id": emoji_id},
+        {"offset": inizio + _utf16_len(emoji + " "), "length": _utf16_len(FIRMA), "type": "text_link",
+         "url": FIRMA_LINK},
+    ]
+    entities.sort(key=lambda e: e["offset"])
+    return f"{testo}{emoji} {FIRMA}", entities
 
 
 def hashtag(title):
@@ -356,8 +397,7 @@ def format_message_uefa(prefix_data: tuple, title: str, roles: dict) -> tuple[st
         lines.append(line)
         base_offset += _utf16_len(line + "\n")
 
-    all_entities.sort(key=lambda e: e["offset"])
-    return "\n".join(lines), all_entities
+    return con_firma("\n".join(lines), all_entities)
 
 
 def check_uefa(state):
@@ -465,7 +505,6 @@ HEADER_RE = re.compile(
 )
 LABEL_RE = re.compile(r"^(IV|VAR|AVAR)\s*:\s*(.+)$", re.I)
 
-SHORT_TEAM = {"JUVENTUS": "Juve"}
 
 
 def person(s):
@@ -479,10 +518,7 @@ def assistants(s):
 
 
 def tag_name(team):
-    team = clean(team)
-    if team.upper() in SHORT_TEAM:
-        return SHORT_TEAM[team.upper()]
-    return re.sub(r"[^A-Za-z0-9À-ÿ]", "", team.title())
+    return _camel(team)
 
 
 def format_message_italia(changed, tag, roles):
@@ -514,7 +550,7 @@ def format_message_italia(changed, tag, roles):
         lines.append(line)
         base_offset += _utf16_len(line + "\n")
 
-    return "\n".join(lines), entities
+    return con_firma("\n".join(lines), entities)
 
 
 def leaf_paragraphs(root):
