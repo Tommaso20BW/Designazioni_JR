@@ -319,7 +319,6 @@ def add_flags_with_entities(text: str) -> tuple[str, list[dict]]:
 
 
 FIRMA = "@Juventus_Reborn"
-FIRMA_LINK = "https://t.me/Juventus_Reborn"
 FIRMA_EMOJI = ("👉", "5985659276327132147")
 
 # Hashtag delle squadre: lo stesso file di LiveScore (nome ESPN -> [nome italiano, hashtag]).
@@ -443,8 +442,6 @@ def con_firma(testo, entities):
     inizio = _utf16_len(testo)
     entities = list(entities) + entita_hashtag(testo) + [
         {"offset": inizio, "length": _utf16_len(emoji), "type": "custom_emoji", "custom_emoji_id": emoji_id},
-        {"offset": inizio + _utf16_len(emoji + " "), "length": _utf16_len(FIRMA), "type": "text_link",
-         "url": FIRMA_LINK},
     ]
     entities.sort(key=lambda e: e["offset"])
     return f"{testo}{emoji} {FIRMA}", entities
