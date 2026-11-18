@@ -99,6 +99,20 @@
       },
       "url": "https://www.aia-figc.it/news/serie-a-enilive-designazioni-11a-giornata-28822/",
       "sent_at": "2026-11-04T12:08:22.559527+01:00"
+    },
+    "28854:JUVENTUS-VENEZIA": {
+      "match": "JUVENTUS - VENEZIA",
+      "date": "",
+      "time": "12.30",
+      "roles": {
+        "ARBITRO": "Arena",
+        "ASSISTENTI": "Cecconi - Miniutti",
+        "IV": "Massa",
+        "VAR": "Ghersini",
+        "AVAR": "Mazzoleni"
+      },
+      "url": "https://www.aia-figc.it/news/serie-a-enilive-designazioni-12a-giornata-28854/",
+      "sent_at": "2026-11-18T12:11:37.679700+01:00"
     }
   }
 }
