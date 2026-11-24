@@ -27,6 +27,13 @@
       "match": "AZ Alkmaar vs Juventus",
       "url": "https://it.uefa.com/uefaeuropaleague/match/2050114--az-alkmaar-vs-juventus/matchinfo/",
       "sent_at": "2026-11-03T10:32:46.980733+01:00"
+    },
+    "Europa League:2050129": {
+      "competition": "Europa League",
+      "match_id": "2050129",
+      "match": "Juventus vs Omonia",
+      "url": "https://it.uefa.com/uefaeuropaleague/match/2050129--juventus-vs-omonia/matchinfo/",
+      "sent_at": "2026-11-24T10:08:32.526951+01:00"
     }
   },
   "italia": {
