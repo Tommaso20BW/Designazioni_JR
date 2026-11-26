@@ -120,6 +120,20 @@
       },
       "url": "https://www.aia-figc.it/news/serie-a-enilive-designazioni-12a-giornata-28854/",
       "sent_at": "2026-11-18T12:11:37.679700+01:00"
+    },
+    "28879:COMO-JUVENTUS": {
+      "match": "COMO - JUVENTUS",
+      "date": "",
+      "time": "20.45",
+      "roles": {
+        "ARBITRO": "Mariani",
+        "ASSISTENTI": "Peretti - Perrotti",
+        "IV": "Marinelli",
+        "VAR": "Pezzuto",
+        "AVAR": "Meraviglia"
+      },
+      "url": "https://www.aia-figc.it/news/serie-a-enilive-designazioni-13a-giornata-28879/",
+      "sent_at": "2026-11-26T12:01:11.532944+01:00"
     }
   }
 }
